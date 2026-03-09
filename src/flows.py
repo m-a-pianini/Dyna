@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.integrate import solve_ivp
+import matplotlib.pyplot as plt
 
 
 # A flow should have as inputs the starting coordinates (in some space) and parameters
@@ -37,6 +38,7 @@ def samelson_flow(t, z, params):
     h = params.get('h', 0)
     wf = params.get('wf', 1)
 
+    z = np.array(z, dtype=np.float128)
     x, y = z
 
     A = A0 + h*np.cos(wf*t)
@@ -49,45 +51,41 @@ def samelson_flow(t, z, params):
     
     return [-phi_y, phi_x]
 
-def solve_rhs_ivp(rhs, t_span, z0):
-
-    sol = solve_ivp(
-        rhs,
-        t_span=t_span,
-        y0=z0,
-        method="Radau",
-        rtol=1e-9,
-        atol=1e-12
-    )
-
-    return sol.y
-
-
-samelsons_pars = {
-    "A0": 1.064,
-    "C": 0.2,
-    "L": 1.8,
-    "h": 0*0.004,
-    "wf": 0.058,
-}
-
-
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-
-    # Test plot to see if the map is correct
-    # it is :,)
-    X, Y = np.meshgrid(np.linspace(-5, 5, 150), np.linspace(-5, 5, 150))
-    U, V = samelson_flow(t=0, z=(X, Y), params=samelsons_pars)
-
+# Visualization utils
+def trajectory_plot(x, y):
     plt.figure(figsize=(8,4))
-    plt.streamplot(x=X, y=Y, u=U, v=V)
+    plt.plot(x, y)
+    plt.xlabel("x")
+    plt.ylabel("y")
+    plt.title("Simple plot")
+    plt.grid(True)
+    plt.show()
+
+def stream_plot(X, Y, U , V, density = 2):
+    plt.figure(figsize=(8,4))
+    plt.streamplot(x=X, y=Y, u=U, v=V, density=density)
     plt.xlabel("x")
     plt.ylabel("y")
     plt.title("Particle trajectory in the Bickley jet")
     plt.grid(True)
     plt.show()
 
+samelsons_pars = {
+    "A0": 1.064,
+    "C": 0.2,
+    "L": 1.8,
+    "h": 0.01,
+    "wf": 0.058,
+}
+
+
+if __name__ == "__main__":
+
+    # Test plot to see if the map is correct
+    # it is :,)
+    X, Y = np.meshgrid(np.linspace(-5, 5, 150), np.linspace(-5, 5, 150))
+    U, V = samelson_flow(t=0, z=(X, Y), params=samelsons_pars)
+    stream_plot(X, Y, U, V)
 
     # Test for the solution finding and display
     # It works
@@ -100,7 +98,7 @@ if __name__ == "__main__":
 
     sol = solve_ivp(
         rhs,
-        t_span=(0, 200),
+        t_span=(0, 100),
         y0=z0,
         method="Radau",
         rtol=1e-9,
@@ -109,12 +107,7 @@ if __name__ == "__main__":
     
     x = sol.y[0]
     y = sol.y[1]
+    print(len(sol.y), len(sol.y[0]), x[0], y[0])
 
-    plt.figure(figsize=(8,4))
-    plt.plot(x, y)
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.title("Particle trajectory in the Bickley jet")
-    plt.grid(True)
-    plt.show()
+    trajectory_plot(x, y)
     

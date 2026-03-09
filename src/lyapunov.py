@@ -1,6 +1,5 @@
 from typing import Callable, Tuple, Iterable
 import numpy as np
-from maps import iterate_map, standard_map
 
 
 def poincare_sos(traj: np.ndarray, section_index: int = 0, tol: float = 1e-6) -> np.ndarray:
@@ -10,10 +9,8 @@ def poincare_sos(traj: np.ndarray, section_index: int = 0, tol: float = 1e-6) ->
     """
     return traj[np.abs(traj[:, section_index]) <= tol]
 
-# TODO: trajectory 2d scatter plot
 
-
-def mLCE_map(map_func: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, N: int, delta0: float = 1e-8) -> float:
+def mLCE_map(map_func: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, N: int, delta0: float = 1e-8) -> np.float64:
     """Estimate maximal Lyapunov exponent for a discrete map using Benettin's algorithm (Benettin et al. 1980).
     Returns the estimated exponent (1 / iteration units).
 
@@ -30,8 +27,8 @@ def mLCE_map(map_func: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, N: in
     y = x0 + delta0 * v
     s = 0.0
     for i in range(N):
-        x = np.asarray(map_func(x))
-        y = np.asarray(map_func(y))
+        x = np.asarray(map_func(x), dtype=np.float64)
+        y = np.asarray(map_func(y), dtype=np.float64)
         diff = y - x
         dist = np.linalg.norm(diff)
         if dist == 0:
@@ -88,6 +85,7 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
     import itertools as it
     from scipy.integrate import solve_ivp
+    from maps import iterate_map, standard_map
 
     # Parser nonsense
     parser = argparse.ArgumentParser(description='Integrator demo: maps and Hamiltonians')
@@ -97,7 +95,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.demo == 'standard_map':
-        k = args.k + 0.001
+        k = args.k*0
         dynamic = lambda x: standard_map(x, k)
     
         init_theta = np.concat([np.linspace(1.2, 1.7, 10), np.linspace(0, 6, 5)])

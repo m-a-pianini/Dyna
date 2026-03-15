@@ -1,6 +1,10 @@
 import numpy as np
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
+import jax
+import jax.numpy as jnp
+import diffrax as dfx
+from diffrax import SaveAt
 
 
 # A flow should have as inputs the starting coordinates (in some space) and parameters
@@ -38,18 +42,18 @@ def samelson_flow(t, z, params):
     h = params.get('h', 0)
     wf = params.get('wf', 1)
 
-    z = np.array(z, dtype=np.float128)
+    z = jnp.array(z, dtype=jnp.float64)
     x, y = z
 
-    A = A0 + h*np.cos(wf*t)
+    A = A0 + h*jnp.cos(wf*t)
 
-    B = (y - A*np.cos(x))/ (L * np.sqrt(1+(A*np.sin(x))**2))
-    phi = -np.tanh(B) + C*y
+    B = (y - A*jnp.cos(x))/ (L * jnp.sqrt(1+(A*jnp.sin(x))**2))
+    phi = -jnp.tanh(B) + C*y
 
-    phi_x = ((A*np.sin(x)* L*np.sqrt(1+(A*np.sin(x))**2) - (((y - A*np.cos(x))*L*((A**2)*np.sin(2*x))) / (2* np.sqrt(1+(A*np.sin(x))**2))) ) / ((1+(A*np.sin(x))**2)*(L**2)))  *  ((np.tanh(B))**2 - 1)
-    phi_y = C - (1 - (np.tanh(B))**2)*(1/(L * np.sqrt(1+(A*np.sin(x))**2)))
+    phi_x = ((A*jnp.sin(x)* L*jnp.sqrt(1+(A*jnp.sin(x))**2) - (((y - A*jnp.cos(x))*L*((A**2)*jnp.sin(2*x))) / (2* jnp.sqrt(1+(A*jnp.sin(x))**2))) ) / ((1+(A*jnp.sin(x))**2)*(L**2)))  *  ((jnp.tanh(B))**2 - 1)
+    phi_y = C - (1 - (jnp.tanh(B))**2)*(1/(L * jnp.sqrt(1+(A*jnp.sin(x))**2)))
     
-    return [-phi_y, phi_x]
+    return jnp.array([-phi_y, phi_x])
 
 # Visualization utils
 def trajectory_plot(x, y):
@@ -83,31 +87,47 @@ if __name__ == "__main__":
 
     # Test plot to see if the map is correct
     # it is :,)
-    X, Y = np.meshgrid(np.linspace(-5, 5, 150), np.linspace(-5, 5, 150))
+    X, Y = np.meshgrid(np.linspace(-5, 5, 850), np.linspace(-5, 5, 850))
     U, V = samelson_flow(t=0, z=(X, Y), params=samelsons_pars)
     stream_plot(X, Y, U, V)
 
     # Test for the solution finding and display
     # It works
-    hs = np.linspace(0.001, 0.1, 10)
-    wfs = np.linspace(0.056, 0.062, 10)
 
-    rhs = lambda t, z: samelson_flow(t, z, samelsons_pars)
+    # Steps to work with diffrax:
+    # 0: no type back and forth bewteen numpy/others, all in jax
 
-    z0 = [-2, -1]
+    # 1: Function (args argument will be passed via diffeqsolve "args")
+    rhs = lambda t, z, args: samelson_flow(t, z, args)
 
-    sol = solve_ivp(
-        rhs,
-        t_span=(0, 100),
-        y0=z0,
-        method="Radau",
-        rtol=1e-9,
-        atol=1e-12
-    )
+    # 2: Initial condition
+    z0 = jnp.array([-2, -1])
+
+    # 3: solver
+    solver = dfx.Dopri5()
     
-    x = sol.y[0]
-    y = sol.y[1]
-    print(len(sol.y), len(sol.y[0]), x[0], y[0])
+    # 4: vector field term
+    term = dfx.ODETerm(rhs)
+
+    # 5: savepoints (Important: this are the instants at which the solution is recorded)
+    saveat = SaveAt(ts=jnp.linspace(0, 100, 1000))
+
+    sol = dfx.diffeqsolve(
+        term,
+        solver,
+        t0=0,
+        t1=100,
+        dt0=0.01,
+        y0=z0,
+        saveat=saveat,
+        args=samelsons_pars,
+        max_steps=120000
+    )
+    print(sol.ys)
+
+    x = sol.ys.transpose()[0]
+    y = sol.ys.transpose()[1]
+    print(sol.ys.shape, x[0], y[0])
 
     trajectory_plot(x, y)
     

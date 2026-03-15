@@ -1,7 +1,12 @@
 from typing import Callable, Tuple, Iterable
 import numpy as np
+import jax
+import jax.numpy as jnp
+import diffrax as dfx
 
 
+#u are cute <3
+# Visualisation utils
 def poincare_sos(traj: np.ndarray, section_index: int = 0, tol: float = 1e-6) -> np.ndarray:
     """Extract points near a Poincaré section defined by a coordinate index (zero crossing not implemented).
 
@@ -9,14 +14,16 @@ def poincare_sos(traj: np.ndarray, section_index: int = 0, tol: float = 1e-6) ->
     """
     return traj[np.abs(traj[:, section_index]) <= tol]
 
-
+# Algorithms for calculating lyapunov exponent(s)
 def mLCE_map(map_func: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, N: int, delta0: float = 1e-8) -> np.float64:
     """Estimate maximal Lyapunov exponent for a discrete map using Benettin's algorithm (Benettin et al. 1980).
+    We fix their step "s" to 1.
     Returns the estimated exponent (1 / iteration units).
 
     The Standard method solves the problem of 
 
     """
+    # Step 0: choose a starting point and create a close vector
     x0 = np.asarray(x0)
     # create a small orthogonal perturbation
     dim = x0.size
@@ -27,8 +34,11 @@ def mLCE_map(map_func: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, N: in
     y = x0 + delta0 * v
     s = 0.0
     for i in range(N):
+        # Step 1: evolve one step each vector
         x = np.asarray(map_func(x), dtype=np.float64)
         y = np.asarray(map_func(y), dtype=np.float64)
+        # Step 2: add the log difference of the evolution process divided by the initial difference = the expansion in one iteration
+        # This gives the expansion of the distance of the vectors
         diff = y - x
         dist = np.linalg.norm(diff)
         if dist == 0:
@@ -39,6 +49,80 @@ def mLCE_map(map_func: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, N: in
         y = x + diff
     return s / N
 
+def flow_lyapunov_spectrum(
+    flow,
+    solver,
+    z0,
+    params=None,
+    dt=0.01,
+    interval=0.1,
+    n_intervals=1000,
+):
+
+    n = z0.shape[0]
+
+    jacobian = jax.jacfwd(lambda z, t: flow(t, z, params))
+
+    def augmented_rhs(t, state, args):
+        
+        z = state[:n]
+        Q = state[n:].reshape((n, n))
+
+        f = flow(t, z, params)
+        J = jacobian(z, t)
+
+        dQ = J @ Q
+
+        return jnp.concatenate([f, dQ.reshape(-1)])
+
+    term = dfx.ODETerm(augmented_rhs)
+
+    def integrate(state, t0):
+
+        sol = dfx.diffeqsolve(
+            term,
+            solver,
+            t0=t0,
+            t1=t0 + interval,
+            dt0=dt,
+            y0=state,
+            saveat=dfx.SaveAt(t1=True),
+        )
+
+        return sol.ys[-1]
+
+    def step(carry, _):
+
+        state, t, lyap = carry
+
+        state = integrate(state, t)
+
+        z = state[:n]
+        Q = state[n:].reshape((n, n))
+
+        Q, R = jnp.linalg.qr(Q)
+
+        lyap = lyap + jnp.log(jnp.abs(jnp.diag(R)))
+
+        state = jnp.concatenate([z, Q.reshape(-1)])
+
+        return (state, t + interval, lyap), None
+
+    Q0 = jnp.eye(n)
+
+    state0 = jnp.concatenate([z0, Q0.reshape(-1)])
+
+    carry0 = (state0, 0.0, jnp.zeros(n))
+
+    carry, _ = jax.lax.scan(step, carry0, None, length=n_intervals)
+
+    state, t, lyap = carry
+
+    total_time = interval * n_intervals
+
+    return lyap / total_time
+
+lyapunov_spectrum = jax.jit(flow_lyapunov_spectrum, static_argnames=("flow", "solver", "n_intervals"))
 # TODO: fix this: add internal ivp solver, 
 def mLCE_flow(f: Callable[[float, np.ndarray], np.ndarray], y0: np.ndarray, t: np.ndarray, delta0: float = 1e-9) -> float:
     """Estimate maximal Lyapunov exponent for a flow by finite-difference shadowing (approx).
@@ -86,10 +170,11 @@ if __name__ == '__main__':
     import itertools as it
     from scipy.integrate import solve_ivp
     from maps import iterate_map, standard_map
+    from time import time
 
     # Parser nonsense
     parser = argparse.ArgumentParser(description='Integrator demo: maps and Hamiltonians')
-    parser.add_argument('--demo', choices=['standard_map', 'pendulum'], default='standard_map')
+    parser.add_argument('--demo', choices=['standard_map', 'pendulum'], default='pendulum')
     parser.add_argument('--iters', type=int, default=2000)
     parser.add_argument('--k', type=float, default=0.971635)
     args = parser.parse_args()
@@ -124,35 +209,54 @@ if __name__ == '__main__':
 
     elif args.demo == 'pendulum':
         # Simple pendulum with H = p^2/2 - cos(theta)
-        def pendulum_flow(t: np.ndarray, z: np.ndarray, m=1, g=9.81, L=1) -> np.ndarray:
+        def pendulum_flow(t: jnp.ndarray, z: jnp.ndarray, m=1, g=9.81, L=1) -> jnp.ndarray:
             theta, p = z
 
-            return [p, -(m*g/L)*np.sin(theta)]
+            return jnp.array([p, -(m*g/L)*jnp.sin(theta)])
 
-        q0 = 1.0
-        p0 = 0.0
-        t_bounds = (0, 100)
-        sol = solve_ivp(pendulum_flow, t_bounds, y0 = [q0, p0],
-                        method="RK45",
-                        rtol=1e-9,
-                        atol=1e-12
-                        )
-        qs, ps = sol.y
+        z0 = jnp.array([1.0, 0.0])
+
+        t_bounds = [0, 30]
+        delta_t = 0.0001
+
+        solver = dfx.Dopri5()
+        term = dfx.ODETerm(lambda t, z, args: pendulum_flow(t, z))
+
+        saveat = dfx.SaveAt(ts=jnp.linspace(t_bounds[0], t_bounds[1], 10000))
+
+        sol = dfx.diffeqsolve(
+            term,
+            solver,
+            t0=t_bounds[0],
+            t1=t_bounds[1],
+            dt0=delta_t,
+            y0=z0,
+            saveat=saveat,
+            args=None,
+            max_steps=1200000
+    )
+
+        qs, ps = sol.ys.transpose()
         plt.figure()
-        plt.plot(qs[:] % (2 * np.pi) - np.pi, ps[:], linewidth=0.5)
+        plt.plot(qs[:] % (2 * jnp.pi) - jnp.pi, ps[:], linewidth=0.5)
         plt.xlabel('theta')
         plt.ylabel('p')
         plt.title('Pendulum phase portrait')
         plt.show()
 
-        def f_flow(t_, y):
-            q = y[0:1]
-            p = y[1:2]
-            dq = p
-            dp = -np.sin(q)
-            return np.concatenate([dq, dp])
+        steps = 10
+        N_int = 3000
+        start = time()
+        lyap_f = flow_lyapunov_spectrum(flow=lambda t, z, args: pendulum_flow(t, z), solver=dfx.Dopri5(), z0=z0,
+                                   dt=delta_t, interval=steps*delta_t, n_intervals=N_int)
+        end = time()
+        print(f"Elapsed time: {(end - start):.6f}")
+        print('Estimated maximal Lyapunov exponent (flow, approx):', lyap_f)
+"""        print('Second method:')
+        start = time()
+        lyap_f = flow_lyapunov_spectrum(flow=lambda t, z, args: pendulum_flow(t, z), solver=dfx.Dopri5(), z0=z0,
+                                   dt=delta_t, interval=steps*delta_t, n_intervals=N_int)
+        end = time()
 
-        y0 = np.concatenate([q0, p0])
-        t_short = np.linspace(0, 50, 2001)
-        lyap_flow = mLCE_flow(f_flow, y0, t_short)
-        print('Estimated maximal Lyapunov exponent (flow, approx):', lyap_flow)
+        print(f"Elapsed time: {(end - start):.6f}")
+        print('Estimated maximal Lyapunov exponent (flow, approx):', lyap_f)"""

@@ -7,14 +7,18 @@ import diffrax as dfx
 
 #u are cute <3
 # Visualisation utils
-def poincare_sos(traj: np.ndarray, section_index: int = 0, tol: float = 1e-6) -> np.ndarray:
+def poincare_sos(traj: np.ndarray, section_index: int = 0, section_val: float = 0, tol: float = 1e-6) -> np.ndarray:
     """Extract points near a Poincaré section defined by a coordinate index (zero crossing not implemented).
 
     This simple helper collects states where coordinate at section_index is near zero (within tol).
     """
-    return traj[np.abs(traj[:, section_index]) <= tol]
+    # optional function/series of points
+
+    idxes = np.where(np.abs(traj[section_index] - section_val) <= tol)[0]
+    return traj[idxes], idxes
 
 # Algorithms for calculating lyapunov exponent(s)
+# Test examples
 def mLCE_map(map_func: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, N: int, delta0: float = 1e-8) -> np.float64:
     """Estimate maximal Lyapunov exponent for a discrete map using Benettin's algorithm (Benettin et al. 1980).
     We fix their step "s" to 1.
@@ -49,6 +53,45 @@ def mLCE_map(map_func: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, N: in
         y = x + diff
     return s / N
 
+def mLCE_flow(f: Callable[[float, np.ndarray], np.ndarray], y0: np.ndarray, t: np.ndarray, delta0: float = 1e-9) -> float:
+    """Estimate maximal Lyapunov exponent for a flow by finite-difference shadowing (approx).
+    Integrates two nearby trajectories with RK4 and applies Benettin renormalization at each time step.
+
+    """
+    t = np.asarray(t)
+    dt = t[1] - t[0]
+    y = np.asarray(y0)
+    dim = y0.size
+    v = np.random.randn(dim)
+    v /= np.linalg.norm(v)
+    # Step 0: choose a starting point and create a close vector
+    z = y + delta0 * v
+    s = 0.0
+    for i in range(len(t) - 1):
+        def step_state(state):
+            # RK4
+            k1 = f(t[i], state)
+            k2 = f(t[i] + dt / 2, state + dt * k1 / 2)
+            k3 = f(t[i] + dt / 2, state + dt * k2 / 2)
+            k4 = f(t[i] + dt, state + dt * k3)
+            return state + dt * (k1 + 2 * k2 + 2 * k3 + k4) / 6
+    
+        # Step 1: evolve one step each
+        y = step_state(y)
+        z = step_state(z)
+        diff = z - y
+        dist = np.linalg.norm(diff)
+        if dist == 0:
+            return -np.inf
+        # Step 2: add the log difference of the evolution process divided by the initial difference = the expansion in one iteration
+        s += np.log(dist / delta0)
+        # Step 3: set the second point as the first (evolved) + the difference vector of norm delta0
+        diff = (delta0 / dist) * diff
+        z = y + diff
+    # The result is a sum of the logs of all these expansions
+    return s / (t[-1] - t[0])
+
+# The serious stuff
 def flow_lyapunov_spectrum(
     flow,
     solver,
@@ -112,6 +155,84 @@ def flow_lyapunov_spectrum(
 
     state0 = jnp.concatenate([z0, Q0.reshape(-1)])
 
+    # Modify jnp array to make it n dimensional arrays to append the iterative lyaps
+    carry0 = (state0, 0.0, jnp.zeros(n))
+
+    carry, _ = jax.lax.scan(step, carry0, None, length=n_intervals)
+
+    state, t, lyap = carry
+
+    total_time = interval * n_intervals
+
+    return lyap / total_time
+
+def jvp_flow_lyapunov_spectrum(
+    flow,
+    solver,
+    z0,
+    params=None,
+    dt=0.01,
+    interval=0.1,
+    n_intervals=1000,
+):
+
+    n = z0.shape[0]
+
+    #jacobian = jax.jacfwd(lambda z, t: flow(t, z, params))
+
+    def augmented_rhs(t, state, args):
+
+        z = state[:n]
+        Q = state[n:].reshape((n, n))
+
+        f = flow(t, z, params)
+
+        def jvp_column(v):
+            _, Jv = jax.jvp(lambda z: flow(t, z, params), (z,), (v,))
+
+            return Jv
+
+        dQ = jax.vmap(jvp_column)(Q.T).T
+
+        return jnp.concatenate([f, dQ.reshape(-1)])
+
+    term = dfx.ODETerm(augmented_rhs)
+
+    def integrate(state, t0):
+
+        sol = dfx.diffeqsolve(
+            term,
+            solver,
+            t0=t0,
+            t1=t0 + interval,
+            dt0=dt,
+            y0=state,
+            saveat=dfx.SaveAt(t1=True),
+        )
+
+        return sol.ys[-1]
+
+    def step(carry, _):
+
+        state, t, lyap = carry
+
+        state = integrate(state, t)
+
+        z = state[:n]
+        Q = state[n:].reshape((n, n))
+
+        Q, R = jnp.linalg.qr(Q)
+
+        lyap = lyap + jnp.log(jnp.abs(jnp.diag(R)))
+
+        state = jnp.concatenate([z, Q.reshape(-1)])
+
+        return (state, t + interval, lyap), None
+
+    Q0 = jnp.eye(n)
+
+    state0 = jnp.concatenate([z0, Q0.reshape(-1)])
+
     carry0 = (state0, 0.0, jnp.zeros(n))
 
     carry, _ = jax.lax.scan(step, carry0, None, length=n_intervals)
@@ -123,45 +244,18 @@ def flow_lyapunov_spectrum(
     return lyap / total_time
 
 lyapunov_spectrum = jax.jit(flow_lyapunov_spectrum, static_argnames=("flow", "solver", "n_intervals"))
-# TODO: fix this: add internal ivp solver, 
-def mLCE_flow(f: Callable[[float, np.ndarray], np.ndarray], y0: np.ndarray, t: np.ndarray, delta0: float = 1e-9) -> float:
-    """Estimate maximal Lyapunov exponent for a flow by finite-difference shadowing (approx).
-    Integrates two nearby trajectories with RK4 and applies Benettin renormalization at each time step.
 
-    """
-    t = np.asarray(t)
-    dt = t[1] - t[0]
-    y = np.asarray(y0)
-    dim = y0.size
-    v = np.random.randn(dim)
-    v /= np.linalg.norm(v)
-    # Step 0: choose a starting point and create a close vector
-    z = y + delta0 * v
-    s = 0.0
-    for i in range(len(t) - 1):
-        def step_state(state):
-            # RK4
-            k1 = f(t[i], state)
-            k2 = f(t[i] + dt / 2, state + dt * k1 / 2)
-            k3 = f(t[i] + dt / 2, state + dt * k2 / 2)
-            k4 = f(t[i] + dt, state + dt * k3)
-            return state + dt * (k1 + 2 * k2 + 2 * k3 + k4) / 6
-    
-        # Step 1: evolve one step each
-        y = step_state(y)
-        z = step_state(z)
-        diff = z - y
-        dist = np.linalg.norm(diff)
-        if dist == 0:
-            return -np.inf
-        # Step 2: add the log difference of the evolution process divided by the initial difference = the expansion in one iteration
-        s += np.log(dist / delta0)
-        # Step 3: set the second point as the first (evolved) + the difference vector of norm delta0
-        diff = (delta0 / dist) * diff
-        z = y + diff
-    # The result is a sum of the logs of all these expansions
-    return s / (t[-1] - t[0])
-
+def kaplan_yorke(lyaps: jnp.ndarray):
+    "Returns the Kaplan–Yorke Hausdorff dimension extimate given the lyapuon exponents"
+    "Assumptions: the map is contracting (sum of array <0)"
+    sor_lyap = jnp.sort(lyaps, axis=None, descending=True)
+    idx = -1
+    s = 0
+    while s>=0:
+        idx += 1
+        s += sor_lyap[idx]
+    dim = idx + jnp.sum(sor_lyap[:idx])/jnp.abs(sor_lyap[idx])
+    return dim
 
 if __name__ == '__main__':
     # small demo: standard map (Chirikov standard map)
@@ -217,7 +311,7 @@ if __name__ == '__main__':
         z0 = jnp.array([1.0, 0.0])
 
         t_bounds = [0, 30]
-        delta_t = 0.0001
+        delta_t = 1e-4
 
         solver = dfx.Dopri5()
         term = dfx.ODETerm(lambda t, z, args: pendulum_flow(t, z))
@@ -244,8 +338,8 @@ if __name__ == '__main__':
         plt.title('Pendulum phase portrait')
         plt.show()
 
-        steps = 10
-        N_int = 3000
+        steps = 0.03
+        N_int = 500000
         start = time()
         lyap_f = flow_lyapunov_spectrum(flow=lambda t, z, args: pendulum_flow(t, z), solver=dfx.Dopri5(), z0=z0,
                                    dt=delta_t, interval=steps*delta_t, n_intervals=N_int)

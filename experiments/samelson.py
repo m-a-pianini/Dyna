@@ -10,7 +10,7 @@ from os.path import dirname
 sys.path.insert(1, dirname(dirname(__file__)))
 
 from src.flows import samelson_flow, trajectory_plot, stream_plot
-from src.lyapunov import lyapunov_spectrum, kaplan_yorke, poincare_sos
+from src.lyapunov import lyapunov_spectrum, kaplan_yorke_dim, poincare_sos
 
 jax.config.update("jax_enable_x64", True)
 
@@ -39,11 +39,12 @@ stream_plot(X, Y, U, V, density=5)
 # Trajectory in the chaos
 z0 = jnp.array([-1.9546, -2.1656])
 Tot_T = 3800
-timesteps = np.linspace(0, Tot_T, 5000)
+timesteps = np.linspace(0, Tot_T, 9000)
 dt = 0.01
 
-# Trajectory solution & visualization
-solver = dfx.Dopri5()
+# Integration
+solver = dfx.Kvaerno5()
+stepsc = dfx.PIDController(rtol=1e-8, atol=1e-8)
 term = dfx.ODETerm(rhs)
 saveat = dfx.SaveAt(ts=timesteps)
 
@@ -56,7 +57,8 @@ first = dfx.diffeqsolve(
     y0=z0,
     saveat=saveat,
     args=pars,
-    max_steps=1200000
+    max_steps=1200000,
+    stepsize_controller=stepsc,
 ).ys.transpose()
 
 # Plot of the trajectory
@@ -79,18 +81,19 @@ plt.show()
 # Poincaré surface of section
 # I would need a func that:
 # Input = ndarray, indexes list, criterion (a crossing or modulo op)
-times, p_idxs = poincare_sos(timesteps, section_val=0, tol=1e-2)
+#times, p_idxs = poincare_sos(timesteps, section_val=0, tol=1e-2)
 
 
 # Calculate lyapunov spectrum
-steps = 100
-N_int = 1e4
-lyap = lyapunov_spectrum(flow=rhs, solver=dfx.Dopri5(), z0=z0, params=pars,
-                                   dt=dt, interval=steps*dt, n_intervals=N_int)
+steps = 10
+N_int = 3e6
+lyap, incr = lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars,
+                                   dt=dt, interval=steps*dt, n_intervals=N_int, stepsize=stepsc)
 print(f'Estimated mLCE (map) for initial condition {z0}: {lyap}')
-
+plt.plot(incr)
+plt.show()
 # Whomp whomp :(
-hdim = kaplan_yorke(lyap)
+hdim = kaplan_yorke_dim(lyap)
 print(f'Kaplan-Yorke extimate: {hdim}')
 
 

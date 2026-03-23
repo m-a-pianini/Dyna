@@ -1,4 +1,5 @@
 from typing import Callable, Tuple, Iterable
+from functools import partial
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -92,19 +93,26 @@ def mLCE_flow(f: Callable[[float, np.ndarray], np.ndarray], y0: np.ndarray, t: n
     return s / (t[-1] - t[0])
 
 # The serious stuff
+# TODO: return the integration (so not to do it twice)
 def flow_lyapunov_spectrum(
-    flow,
+    flow: Callable,
     solver,
     z0,
+    t0=0.0,
     params=None,
     dt=0.01,
     interval=0.1,
     n_intervals=1000,
+    burn_in=50,
+    stepsize=dfx.ConstantStepSize(),
+    jacobian=True
 ):
+    "Returns the lyapunov exponents extimate by iteration via Benettin algorithm with QR orthogonalization"
 
     n = z0.shape[0]
 
-    jacobian = jax.jacfwd(lambda z, t: flow(t, z, params))
+    if jacobian:
+        jacob = jax.jacfwd(lambda z, t: flow(t, z, params))
 
     def augmented_rhs(t, state, args):
         
@@ -112,87 +120,16 @@ def flow_lyapunov_spectrum(
         Q = state[n:].reshape((n, n))
 
         f = flow(t, z, params)
-        J = jacobian(z, t)
 
-        dQ = J @ Q
+        if jacobian:
+            J = jacob(z, t)
+            dQ = J @ Q
+        else:
+            def jvp_column(v):
+                _, Jv = jax.jvp(lambda z: flow(t, z, params), (z,), (v,))
+                return Jv
 
-        return jnp.concatenate([f, dQ.reshape(-1)])
-
-    term = dfx.ODETerm(augmented_rhs)
-
-    def integrate(state, t0):
-
-        sol = dfx.diffeqsolve(
-            term,
-            solver,
-            t0=t0,
-            t1=t0 + interval,
-            dt0=dt,
-            y0=state,
-            saveat=dfx.SaveAt(t1=True),
-        )
-
-        return sol.ys[-1]
-
-    def step(carry, _):
-
-        state, t, lyap = carry
-
-        state = integrate(state, t)
-
-        z = state[:n]
-        Q = state[n:].reshape((n, n))
-
-        Q, R = jnp.linalg.qr(Q)
-
-        lyap = lyap + jnp.log(jnp.abs(jnp.diag(R)))
-
-        state = jnp.concatenate([z, Q.reshape(-1)])
-
-        return (state, t + interval, lyap), None
-
-    Q0 = jnp.eye(n)
-
-    state0 = jnp.concatenate([z0, Q0.reshape(-1)])
-
-    # Modify jnp array to make it n dimensional arrays to append the iterative lyaps
-    carry0 = (state0, 0.0, jnp.zeros(n))
-
-    carry, _ = jax.lax.scan(step, carry0, None, length=n_intervals)
-
-    state, t, lyap = carry
-
-    total_time = interval * n_intervals
-
-    return lyap / total_time
-
-def jvp_flow_lyapunov_spectrum(
-    flow,
-    solver,
-    z0,
-    params=None,
-    dt=0.01,
-    interval=0.1,
-    n_intervals=1000,
-):
-
-    n = z0.shape[0]
-
-    #jacobian = jax.jacfwd(lambda z, t: flow(t, z, params))
-
-    def augmented_rhs(t, state, args):
-
-        z = state[:n]
-        Q = state[n:].reshape((n, n))
-
-        f = flow(t, z, params)
-
-        def jvp_column(v):
-            _, Jv = jax.jvp(lambda z: flow(t, z, params), (z,), (v,))
-
-            return Jv
-
-        dQ = jax.vmap(jvp_column)(Q.T).T
+            dQ = jax.vmap(jvp_column)(Q.T).T
 
         return jnp.concatenate([f, dQ.reshape(-1)])
 
@@ -208,11 +145,12 @@ def jvp_flow_lyapunov_spectrum(
             dt0=dt,
             y0=state,
             saveat=dfx.SaveAt(t1=True),
+            stepsize_controller=stepsize,
         )
 
         return sol.ys[-1]
 
-    def step(carry, _):
+    def step(carry, k):
 
         state, t, lyap = carry
 
@@ -227,35 +165,111 @@ def jvp_flow_lyapunov_spectrum(
 
         state = jnp.concatenate([z, Q.reshape(-1)])
 
-        return (state, t + interval, lyap), None
+        current_time = (k + 1) * interval
+        lam_est = lyap / current_time
+
+        return (state, t + interval, lyap), lam_est
 
     Q0 = jnp.eye(n)
 
     state0 = jnp.concatenate([z0, Q0.reshape(-1)])
 
-    carry0 = (state0, 0.0, jnp.zeros(n))
-
-    carry, _ = jax.lax.scan(step, carry0, None, length=n_intervals)
+    # Slight desing inefficiency: now lyap is effectively ser[-1]
+    carry0 = (state0, t0, jnp.zeros(n))
+    ks = jnp.arange(n_intervals)
+    carry, ser = jax.lax.scan(step, carry0, ks, length=n_intervals)
 
     state, t, lyap = carry
 
     total_time = interval * n_intervals
 
-    return lyap / total_time
+    return ser
 
-lyapunov_spectrum = jax.jit(flow_lyapunov_spectrum, static_argnames=("flow", "solver", "n_intervals"))
+# Probably not the best practice
+lyapunov_spectrum = jax.jit(flow_lyapunov_spectrum, static_argnames=("flow", "solver", "n_intervals", "burn_in", "stepsize", "jacobian"))
 
-def kaplan_yorke(lyaps: jnp.ndarray):
-    "Returns the Kaplan–Yorke Hausdorff dimension extimate given the lyapuon exponents"
-    "Assumptions: the map is contracting (sum of array <0)"
-    sor_lyap = jnp.sort(lyaps, axis=None, descending=True)
-    idx = -1
-    s = 0
-    while s>=0:
-        idx += 1
-        s += sor_lyap[idx]
-    dim = idx + jnp.sum(sor_lyap[:idx])/jnp.abs(sor_lyap[idx])
+# Efficient many-trajectories lyapunov exponent calculation
+def make_batch_lyapunov_solver(flow, solver, dt, n_intervals, stepsize, burn_in, jacobian=True):
+
+    @partial(jax.jit, static_argnames=())
+    def compute(z0, t0, params, interval):
+
+        return flow_lyapunov_spectrum(
+            flow=flow,
+            solver=solver,
+            z0=z0,
+            t0=t0,
+            params=params,
+            dt=dt,
+            interval=interval,
+            n_intervals=n_intervals,
+            burn_in=burn_in,
+            stepsize=stepsize,
+            jacobian=jacobian,
+        )
+
+    return compute
+
+"""
+# Example usage:
+compute = make_batch_lyapunov_solver(flow=rhs, solver=solver, dt=dt, stepsize=stepsc, n_intervals=N_iters, burn_in=50, jacobian=False)
+batched_lyap = jax.jit(
+    jax.vmap(compute, in_axes=(0, 0, None, None))
+)
+
+cum_lyaps = batched_lyap(jnp.array([[0., 0], [1, 1]]), t0_batch, pars, steps*dt)
+
+# Alternative for memory filling
+results = []
+z0_all = jnp.array([[0., 0], [1, 1]])
+for i in range(0, len(z0_all), batch_size):
+    z_chunk = z0_all[i:i+batch_size]
+    lam = batched_lyap(z_chunk, t0_batch, pars, steps*dt)
+    results.append(lam)
+
+cum_lyaps = jnp.concatenate(results, axis=0)"""
+
+def kaplan_yorke_dim(lyaps: jnp.ndarray):
+    """
+    Compute Kaplan–Yorke (Lyapunov) dimension.
+
+    Works for:
+        lyaps.shape = (n,) or (..., n)
+
+    Assumes exponents are real and system is dissipative.
+    """
+
+    # sort descending along last axis
+    lam = jnp.sort(lyaps, axis=-1)[..., ::-1]
+
+    # cumulative sums
+    cumsum = jnp.cumsum(lam, axis=-1)
+
+    # find largest j such that sum >= 0
+    mask = cumsum >= 0
+
+    # number of non-negative partial sums 
+    j = jnp.sum(mask, axis=-1)  # shape (...)
+
+    # index of the first negative cumulant
+    j_clipped = jnp.clip(j - 1, 0, lam.shape[-1] - 1)
+
+    # sum up to j
+    sum_j = jnp.take_along_axis(cumsum, j_clipped[..., None], axis=-1)[..., 0]
+
+    # next exponent λ_{j+1}
+    lam_next = jnp.take_along_axis(
+        lam,
+        jnp.clip(j_clipped + 1, 0, lam.shape[-1] - 1)[..., None],
+        axis=-1
+    )[..., 0]
+    # print(j, j_clipped[..., None], cumsum, sum_j, lam_next) # Debug line
+
+    # Kaplan–Yorke formula
+    dim = j + sum_j / jnp.abs(lam_next)
+
     return dim
+
 
 if __name__ == '__main__':
     # small demo: standard map (Chirikov standard map)

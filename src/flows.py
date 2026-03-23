@@ -98,6 +98,20 @@ def samelson_flow(t, z, params):
     
     return jnp.array([-phi_y, phi_x])
 
+def duffing(t, z, params):
+    a = params.get("a", 1)
+    b = params.get("b", 1)
+    c = params.get("c", 1)
+    d = params.get("d", 0)
+
+    w = params.get("w", 2*jnp.pi)
+
+    z = jnp.array(z, dtype=jnp.float64)
+    x, y = z
+    dx = y
+    dy = -a*y -d*x - c*x*x*x + b*jnp.cos(w*t)
+    return jnp.array([dx, dy])
+
 # Visualization utils
 def trajectory_plot(x, y):
     plt.figure(figsize=(8,4))

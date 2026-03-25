@@ -1,2 +1,2 @@
-/figs
-**/src/__pycache__
+figs/
+*/*/__pycache__

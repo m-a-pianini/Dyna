@@ -4,6 +4,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import diffrax as dfx
+jax.config.update("jax_enable_x64", True)
 
 
 #u are cute <3
@@ -19,7 +20,8 @@ def poincare_sos(traj: np.ndarray, section_index: int = 0, section_val: float = 
     return traj[idxes], idxes
 
 # Algorithms for calculating lyapunov exponent(s)
-# Test examples
+
+# Maximum Lyapunov exponent
 def mLCE_map(map_func: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, N: int, delta0: float = 1e-8) -> np.float64:
     """Estimate maximal Lyapunov exponent for a discrete map using Benettin's algorithm (Benettin et al. 1980).
     We fix their step "s" to 1.
@@ -92,8 +94,11 @@ def mLCE_flow(f: Callable[[float, np.ndarray], np.ndarray], y0: np.ndarray, t: n
     # The result is a sum of the logs of all these expansions
     return s / (t[-1] - t[0])
 
-# The serious stuff
+# Full spectrum 
 # TODO: return the integration (so not to do it twice)
+# TODO: Burn-in
+# Jax-JIT compilation for speed
+@partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "stepsize", "jacobian"))
 def flow_lyapunov_spectrum(
     flow: Callable,
     solver,
@@ -185,9 +190,6 @@ def flow_lyapunov_spectrum(
 
     return ser
 
-# Probably not the best practice
-lyapunov_spectrum = jax.jit(flow_lyapunov_spectrum, static_argnames=("flow", "solver", "n_intervals", "burn_in", "stepsize", "jacobian"))
-
 # Efficient many-trajectories lyapunov exponent calculation
 def make_batch_lyapunov_solver(flow, solver, dt, n_intervals, stepsize, burn_in, jacobian=True):
 
@@ -229,6 +231,7 @@ for i in range(0, len(z0_all), batch_size):
 
 cum_lyaps = jnp.concatenate(results, axis=0)"""
 
+# Fractal dimension extimation 
 def kaplan_yorke_dim(lyaps: jnp.ndarray):
     """
     Compute Kaplan–Yorke (Lyapunov) dimension.
@@ -269,6 +272,186 @@ def kaplan_yorke_dim(lyaps: jnp.ndarray):
     dim = j + sum_j / jnp.abs(lam_next)
 
     return dim
+
+import numpy as np
+
+
+def count_boxes(trajectory: np.ndarray, box_size: float) -> int:
+    """
+    Count the number of boxes of given size needed to cover the trajectory.
+
+    Parameters:
+        trajectory: Array of shape (n_points, d) representing the d-dimensional trajectory
+        box_size: Size of each box
+
+    Returns:
+        Number of boxes needed to cover the trajectory
+    """
+    box_indices = np.floor(trajectory / box_size).astype(int)
+    unique_boxes = np.unique(box_indices, axis=0)
+    return len(unique_boxes)
+
+def find_linear_region(x: np.ndarray, y: np.ndarray, 
+                       min_points: int = 5,
+                       r2_threshold: float = 0.999) -> tuple[int, int]:
+    """
+    Find the longest contiguous window in (x, y) that is well-described
+    by a linear fit, using a two-pointer expansion strategy.
+
+    For each candidate start point, the window is expanded rightward as long
+    as the R² of the linear fit stays above r2_threshold. The longest such
+    window across all start points is returned.
+
+    Parameters:
+        x:             1D array of x values (assumed sorted)
+        y:             1D array of y values
+        min_points:    Minimum number of points a valid window must contain
+        r2_threshold:  Minimum R² to consider a window linear (default: 0.999)
+
+    Returns:
+        Tuple (start, end) of indices (inclusive) of the best linear region
+    """
+    n = len(x)
+    best_start, best_end = 0, min_points - 1
+    best_length = 0
+
+    for start in range(n - min_points + 1):
+        # Expand the window rightward while it remains linear
+        last_good_end = None
+
+        for end in range(start + min_points - 1, n):
+            x_win = x[start:end + 1]
+            y_win = y[start:end + 1]
+
+            coeffs = np.polyfit(x_win, y_win, 1)
+            y_pred = np.polyval(coeffs, x_win)
+
+            ss_res = np.sum((y_win - y_pred) ** 2)
+            ss_tot = np.sum((y_win - y_win.mean()) ** 2)
+            r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
+
+            if r2 >= r2_threshold:
+                last_good_end = end
+            else:
+                break  # once R² drops, expanding further only makes it worse
+
+        if last_good_end is not None:
+            length = last_good_end - start + 1
+            if length > best_length:
+                best_length = length
+                best_start, best_end = start, last_good_end
+
+    return best_start, best_end
+
+def boxcount_dimension(
+    trajectory: np.ndarray,
+    box_sizes: np.ndarray | None = None,
+    n_sizes: int = 20,
+    min_points: int = 5,
+) -> tuple[float, np.ndarray, np.ndarray, int, int]:
+    """
+    Estimate the fractal dimension of a d-dimensional trajectory using the
+    box-counting algorithm, fitting only in the linear region of the log-log plot.
+
+    Parameters:
+        trajectory: Array of shape (n_points, d)
+        box_sizes:  Box sizes to use; auto-generated if None
+        n_sizes:    Number of sizes when auto-generating (ignored if box_sizes given)
+        min_points: Minimum points required for a linear-region candidate
+
+    Returns:
+        Tuple of:
+            fractal_dimension  - estimated D
+            box_sizes_used     - all box sizes (including invalid ones filtered out)
+            box_counts         - corresponding box counts
+            linear_start       - index into the valid arrays where the fit begins
+            linear_end         - index into the valid arrays where the fit ends
+    """
+    trajectory = np.asarray(trajectory, dtype=float)
+    if trajectory.ndim == 1:
+        trajectory = trajectory[:, np.newaxis]
+
+    mins = trajectory.min(axis=0)
+    maxs = trajectory.max(axis=0)
+    extent = np.max(maxs - mins)
+
+    if box_sizes is None:
+        n_points = len(trajectory)
+        min_size = extent / n_points
+        max_size = extent / 2
+        box_sizes = np.logspace(np.log10(min_size), np.log10(max_size), n_sizes)
+
+    trajectory_shifted = trajectory - mins
+
+    counts = np.array([count_boxes(trajectory_shifted, s) for s in box_sizes])
+
+    # Work in log space
+    valid = counts > 0
+    valid_sizes  = box_sizes[valid]
+    valid_counts = counts[valid]
+
+    log_inv_sizes = np.log(1.0 / valid_sizes)
+    log_counts    = np.log(valid_counts)
+
+    # Detect and fit only the linear region
+    lin_start, lin_end = find_linear_region(log_inv_sizes, log_counts, min_points)
+    coeffs = np.polyfit(
+        log_inv_sizes[lin_start:lin_end + 1],
+        log_counts[lin_start:lin_end + 1],
+        1,
+    )
+    fractal_dimension = coeffs[0]
+
+    return fractal_dimension, valid_sizes, valid_counts, lin_start, lin_end
+
+
+@partial(jax.jit, static_argnames=("n_scales",))
+def correlation_dimension(
+    trajectory,
+    n_scales=20,
+    eps_min=1e-3,
+    eps_max=1e-1,
+):
+
+    N, d = trajectory.shape
+
+    # --- anisotropic rescaling (important) ---
+    mins = jnp.min(trajectory, axis=0)
+    maxs = jnp.max(trajectory, axis=0)
+    X = (trajectory - mins) / (maxs - mins + 1e-12)
+
+    # --- pairwise distances (static shape!) ---
+    diff = X[:, None, :] - X[None, :, :]
+    dist = jnp.linalg.norm(diff, axis=-1)
+
+    # remove diagonal
+    mask = ~jnp.eye(N, dtype=bool)
+
+    # --- epsilon scales ---
+    epsilons = jnp.logspace(
+        jnp.log10(eps_max),
+        jnp.log10(eps_min),
+        n_scales
+    )
+
+    def corr_sum(eps):
+        return jnp.sum((dist < eps) & mask) / (N * (N - 1))
+
+    C = jax.vmap(corr_sum)(epsilons)
+
+    # avoid log(0)
+    max_C = jnp.maximum(C, 1e-12)
+
+    log_eps = jnp.log(epsilons)
+    log_C = jnp.log(max_C)
+
+    # --- slope (dimension) ---
+    A = jnp.stack([log_eps, jnp.ones_like(log_eps)], axis=1)
+    coeffs = jnp.linalg.lstsq(A, log_C, rcond=None)[0]
+
+    dim = coeffs[0]
+
+    return dim, jnp.array([epsilons, C])
 
 
 if __name__ == '__main__':

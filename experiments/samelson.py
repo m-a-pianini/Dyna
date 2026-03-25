@@ -10,7 +10,7 @@ from os.path import dirname
 sys.path.insert(1, dirname(dirname(__file__)))
 
 from src.flows import samelson_flow, trajectory_plot, stream_plot
-from src.lyapunov import lyapunov_spectrum, kaplan_yorke_dim, poincare_sos
+from src.lyapunov import flow_lyapunov_spectrum, kaplan_yorke_dim, poincare_sos
 
 jax.config.update("jax_enable_x64", True)
 
@@ -87,7 +87,7 @@ plt.show()
 # Calculate lyapunov spectrum
 steps = 10
 N_int = 3e6
-lyap, incr = lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars,
+lyap, incr = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars,
                                    dt=dt, interval=steps*dt, n_intervals=N_int, stepsize=stepsc)
 print(f'Estimated mLCE (map) for initial condition {z0}: {lyap}')
 plt.plot(incr)

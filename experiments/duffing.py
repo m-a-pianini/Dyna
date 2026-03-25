@@ -11,7 +11,7 @@ from os.path import dirname
 sys.path.insert(1, dirname(dirname(__file__)))
 
 from src.flows import duffing, trajectory_plot, stream_plot
-from src.lyapunov import lyapunov_spectrum, make_batch_lyapunov_solver, kaplan_yorke_dim, poincare_sos
+from src.lyapunov import flow_lyapunov_spectrum, make_batch_lyapunov_solver, kaplan_yorke_dim, boxcount_dimension, poincare_sos
 
 jax.config.update("jax_enable_x64", True)
 
@@ -80,7 +80,7 @@ trajectory_plot(first[0], first[1])
 # Calculate lyapunov spectrum
 steps = 1
 N_iters = 2e5
-cums = lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars,
+cums = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars,
                                    dt=dt, interval=steps*dt, n_intervals=N_iters, stepsize=stepsc, jacobian=False)
 
 print(f'Estimated mLCE (map) for initial condition {z0}: {cums[-1]}')
@@ -119,6 +119,18 @@ for cum in cum_dims:
     plt.plot(cum)
 plt.grid(True)
 plt.show()
-# EXPERIMENT PROPER:
- 
-# GRAPH 3: BOX COUNTING PLOT
+
+D, sizes, counts, i0, i1 = boxcount_dimension(first.transpose())
+
+print(f"Box counting extimate: {D}")
+
+log_s = np.log(1 / sizes)
+log_c = np.log(counts)
+
+plt.plot(log_s, log_c, 'o', label='all scales')
+plt.plot(log_s[i0:i1+1], log_c[i0:i1+1], 'o', color='red', label='linear region')
+plt.plot(log_s[i0:i1+1], np.polyval([D, log_c[i0] - D*log_s[i0]], log_s[i0:i1+1]),
+         '--', label=f'fit D={D:.3f}')
+plt.xlabel('log(1/r)'); plt.ylabel('log N(r)')
+plt.grid(True)
+plt.legend(); plt.show()

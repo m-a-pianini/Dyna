@@ -108,21 +108,21 @@ def flow_lyapunov_spectrum(
     dt=0.01,
     interval=0.1,
     n_intervals=1000,
-    burn_in=50,
+    burn_in=100,
     stepsize=dfx.ConstantStepSize(),
     jacobian=True
 ):
     "Returns the lyapunov exponents extimate by iteration via Benettin algorithm with QR orthogonalization"
 
-    n = z0.shape[0]
+    z_dim = z0.shape[0]
 
     if jacobian:
         jacob = jax.jacfwd(lambda z, t: flow(t, z, params))
 
     def augmented_rhs(t, state, args):
         
-        z = state[:n]
-        Q = state[n:].reshape((n, n))
+        z = state[:z_dim]
+        Q = state[z_dim:].reshape((z_dim, z_dim))
 
         f = flow(t, z, params)
 
@@ -161,8 +161,8 @@ def flow_lyapunov_spectrum(
 
         state = integrate(state, t)
 
-        z = state[:n]
-        Q = state[n:].reshape((n, n))
+        z = state[:z_dim]
+        Q = state[z_dim:].reshape((z_dim, z_dim))
 
         Q, R = jnp.linalg.qr(Q)
 
@@ -175,18 +175,23 @@ def flow_lyapunov_spectrum(
 
         return (state, t + interval, lyap), lam_est
 
-    Q0 = jnp.eye(n)
-
+    # Burn in setup
+    Q0 = jnp.eye(z_dim)
     state0 = jnp.concatenate([z0, Q0.reshape(-1)])
+    carry0 = (state0, t0, jnp.zeros(z_dim))
+    k0 = jnp.arange(burn_in)
+    carry, _ = jax.lax.scan(step, carry0, k0, length=burn_in)
+    state_follow, t_follow, lyap = carry
 
-    # Slight desing inefficiency: now lyap is effectively ser[-1]
-    carry0 = (state0, t0, jnp.zeros(n))
-    ks = jnp.arange(n_intervals)
-    carry, ser = jax.lax.scan(step, carry0, ks, length=n_intervals)
+    # Follow up
+    remaining = n_intervals - burn_in
+    ks = jnp.arange(remaining)
+    carry_follow = (state_follow, t_follow, jnp.zeros(z_dim))
+    carry, ser = jax.lax.scan(step, carry_follow, ks, length=remaining)
 
     state, t, lyap = carry
 
-    total_time = interval * n_intervals
+    total_time = interval * remaining
 
     return ser
 
@@ -258,7 +263,7 @@ def kaplan_yorke_dim(lyaps: jnp.ndarray):
     j_clipped = jnp.clip(j - 1, 0, lam.shape[-1] - 1)
 
     # sum up to j
-    sum_j = jnp.take_along_axis(cumsum, j_clipped[..., None], axis=-1)[..., 0]
+    sum_j = jnp.clip(jnp.take_along_axis(cumsum, j_clipped[..., None], axis=-1)[..., 0], 0)
 
     # next exponent λ_{j+1}
     lam_next = jnp.take_along_axis(

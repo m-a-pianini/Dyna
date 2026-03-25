@@ -1,6 +1,5 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.integrate import solve_ivp
 import jax
 import jax.numpy as jnp
 import diffrax as dfx
@@ -10,7 +9,7 @@ from os.path import dirname
 sys.path.insert(1, dirname(dirname(__file__)))
 
 from src.flows import samelson_flow, trajectory_plot, stream_plot
-from src.lyapunov import flow_lyapunov_spectrum, kaplan_yorke_dim, poincare_sos
+from src.lyapunov import flow_lyapunov_spectrum, make_batch_lyapunov_solver, kaplan_yorke_dim, boxcount_dimension, poincare_sos
 
 jax.config.update("jax_enable_x64", True)
 
@@ -85,20 +84,66 @@ plt.show()
 
 
 # Calculate lyapunov spectrum
-steps = 10
-N_int = 3e6
-lyap, incr = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars,
-                                   dt=dt, interval=steps*dt, n_intervals=N_int, stepsize=stepsc)
-print(f'Estimated mLCE (map) for initial condition {z0}: {lyap}')
-plt.plot(incr)
+steps = 1
+N_int = 2e5
+burns = 0.3
+cums = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars,
+                                   dt=dt, interval=steps*dt, n_intervals=N_int, stepsize=stepsc, burn_in=int(N_int*burns))
+print(f'Estimated mLCE (map) for initial condition {z0}: {cums[-1]}')
+plt.plot(cums)
 plt.show()
 # Whomp whomp :(
-hdim = kaplan_yorke_dim(lyap)
+hdim = kaplan_yorke_dim(cums[-1])
 print(f'Kaplan-Yorke extimate: {hdim}')
 
 
 # EXPERIMENT PROPER:
 # Prep: 
-# GRAPH 1: lyapunov exponents in function of number of iteration
 # GRAPH 2: K-Y Extimate dimension (in function of lyapunov exponents iterations)
 # GRAPH 3: BOX COUNTING PLOT
+
+flurry = jnp.array([jnp.array([-1.2, -1]), jnp.array([-2, 2]), jnp.array([2, 2]),
+                    jnp.array([3, 1]), jnp.array([1, 4]), jnp.array([-3, 3]),
+                    jnp.array([-2, -6]), jnp.array([10, -2]), jnp.array([-7, 3]),
+                    ])
+t0_batch = jnp.zeros(len(flurry))
+
+compute = make_batch_lyapunov_solver(flow=rhs, solver=solver, dt=dt, stepsize=stepsc, n_intervals=N_int, burn_in=int(N_int*burns), jacobian=False)
+batched_lyap = jax.jit(
+    jax.vmap(compute, in_axes=(0, 0, None, None))
+)
+
+cum_lyaps = batched_lyap(flurry, t0_batch, pars, steps*dt)
+
+for cum in cum_lyaps:
+    plt.plot(cum)
+plt.grid(True)
+plt.show()
+
+cum_dims = kaplan_yorke_dim(cum_lyaps)
+
+for cum in cum_dims:
+    plt.plot(cum)
+plt.grid(True)
+plt.show()
+
+D, sizes, counts, i0, i1 = boxcount_dimension(np.array((np.array(first) + np.pi)% 2* np.pi - np.pi).transpose()[5000: ,:])
+print(f"Box counting extimate: {D}")
+
+log_s = np.log10(1 / sizes)
+log_c = np.log10(counts)
+
+s_fit = np.array([log_s[i0], log_s[i1]])
+c_fit = np.polyval(np.polyfit(log_s[i0:i1+1], log_c[i0:i1+1], 1), s_fit)
+
+fig, ax = plt.subplots()
+ax.loglog(1 / sizes, counts, 'o', label='all scales')
+ax.loglog(1 / sizes[i0:i1+1], counts[i0:i1+1], 'o', color='red', label='linear region')
+
+# Convert back from log10 space to data space for the fit line
+ax.loglog(10**s_fit, 10**c_fit, '--', label=f'fit D={D:.3f}')
+
+ax.set_xlabel('1/r (inverse box size)')
+ax.set_ylabel('N(r) (box count)')
+ax.legend(); plt.grid(True)
+plt.show()

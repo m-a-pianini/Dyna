@@ -9,7 +9,9 @@ jax.config.update("jax_enable_x64", True)
 
 #u are cute <3
 # Visualisation utils
-def poincare_sos(traj: np.ndarray, section_index: int = 0, section_val: float = 0, tol: float = 1e-6) -> np.ndarray:
+# TODO: implement this
+def poincare_sos(traj: np.ndarray, time_array: np.ndarray | None = None,
+                  section_index: int = 0, section_val: float = 0, tol: float = 1e-6) -> np.ndarray:
     """Extract points near a Poincaré section defined by a coordinate index (zero crossing not implemented).
 
     This simple helper collects states where coordinate at section_index is near zero (within tol).
@@ -95,10 +97,9 @@ def mLCE_flow(f: Callable[[float, np.ndarray], np.ndarray], y0: np.ndarray, t: n
     return s / (t[-1] - t[0])
 
 # Full spectrum 
-# TODO: return the integration (so not to do it twice)
-# TODO: Burn-in
+# TODO: return the integration (so to do it once/compare)
 # Jax-JIT compilation for speed
-@partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "stepsize", "jacobian"))
+@partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "save_at", "stepsize", "jacobian"))
 def flow_lyapunov_spectrum(
     flow: Callable,
     solver,
@@ -109,6 +110,7 @@ def flow_lyapunov_spectrum(
     interval=0.1,
     n_intervals=1000,
     burn_in=100,
+    save_at=dfx.SaveAt(t1=True),
     stepsize=dfx.ConstantStepSize(),
     jacobian=True
 ):
@@ -149,17 +151,17 @@ def flow_lyapunov_spectrum(
             t1=t0 + interval,
             dt0=dt,
             y0=state,
-            saveat=dfx.SaveAt(t1=True),
+            saveat=save_at,
             stepsize_controller=stepsize,
         )
 
-        return sol.ys[-1]
+        return sol.ys
 
     def step(carry, k):
 
         state, t, lyap = carry
 
-        state = integrate(state, t)
+        state = integrate(state, t)[-1]
 
         z = state[:z_dim]
         Q = state[z_dim:].reshape((z_dim, z_dim))
@@ -173,14 +175,16 @@ def flow_lyapunov_spectrum(
         current_time = (k + 1) * interval
         lam_est = lyap / current_time
 
-        return (state, t + interval, lyap), lam_est
+        seq = jnp.array([z, lam_est])
+
+        return (state, t + interval, lyap), seq
 
     # Burn in setup
     Q0 = jnp.eye(z_dim)
     state0 = jnp.concatenate([z0, Q0.reshape(-1)])
     carry0 = (state0, t0, jnp.zeros(z_dim))
     k0 = jnp.arange(burn_in)
-    carry, _ = jax.lax.scan(step, carry0, k0, length=burn_in)
+    carry, ser0 = jax.lax.scan(step, carry0, k0, length=burn_in)
     state_follow, t_follow, lyap = carry
 
     # Follow up
@@ -192,8 +196,9 @@ def flow_lyapunov_spectrum(
     state, t, lyap = carry
 
     total_time = interval * remaining
-
-    return ser
+    traj = jnp.concat([ser0[:, 0, ...], ser[:, 0, ...]])
+    lyap_ext = ser[:, 1, ...]
+    return traj, lyap_ext
 
 # Efficient many-trajectories lyapunov exponent calculation
 def make_batch_lyapunov_solver(flow, solver, dt, n_intervals, stepsize, burn_in, jacobian=True):
@@ -278,9 +283,7 @@ def kaplan_yorke_dim(lyaps: jnp.ndarray):
 
     return dim
 
-import numpy as np
-
-
+# Box counting
 def count_boxes(trajectory: np.ndarray, box_size: float) -> int:
     """
     Count the number of boxes of given size needed to cover the trajectory.
@@ -409,7 +412,8 @@ def boxcount_dimension(
 
     return fractal_dimension, valid_sizes, valid_counts, lin_start, lin_end
 
-
+# Correlation dimension
+# TODO: fix this
 @partial(jax.jit, static_argnames=("n_scales",))
 def correlation_dimension(
     trajectory,

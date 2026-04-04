@@ -6,8 +6,9 @@ import diffrax as dfx
 from time import time
 
 import sys
-from os.path import dirname
-sys.path.insert(1, dirname(dirname(__file__)))
+import os
+cwd = os.getcwd()
+sys.path.append(cwd)
 
 from src.flows import duffing, trajectory_plot, stream_plot
 from src.lyapunov import flow_lyapunov_spectrum, make_batch_lyapunov_solver, kaplan_yorke_dim, boxcount_dimension, poincare_sos
@@ -80,7 +81,7 @@ trajectory_plot(first[0], first[1])
 steps = 1
 N_iters = 2e5
 burns = 0.3
-cums = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars,
+traject, cums = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars,
                                    dt=dt, interval=steps*dt, n_intervals=N_iters, stepsize=stepsc, jacobian=False, burn_in=int(N_iters*burns))
 
 print(f'Estimated mLCE (map) for initial condition {z0}: {cums[-1]}')
@@ -104,7 +105,7 @@ batched_lyap = jax.jit(
 )
 
 start = time()
-cum_lyaps = batched_lyap(flurry, t0_batch, pars, steps*dt)
+trajects,cum_lyaps = batched_lyap(flurry, t0_batch, pars, steps*dt)
 end = time()
 
 for cum in cum_lyaps:

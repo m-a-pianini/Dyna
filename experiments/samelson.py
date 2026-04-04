@@ -87,8 +87,12 @@ plt.show()
 steps = 1
 N_int = 2e5
 burns = 0.3
-cums = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars,
+traject, cums = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars,
                                    dt=dt, interval=steps*dt, n_intervals=N_int, stepsize=stepsc, burn_in=int(N_int*burns))
+
+traject = traject.transpose()
+trajectory_plot(*traject)
+
 print(f'Estimated mLCE (map) for initial condition {z0}: {cums[-1]}')
 plt.plot(cums)
 plt.show()
@@ -113,7 +117,7 @@ batched_lyap = jax.jit(
     jax.vmap(compute, in_axes=(0, 0, None, None))
 )
 
-cum_lyaps = batched_lyap(flurry, t0_batch, pars, steps*dt)
+trajects, cum_lyaps = batched_lyap(flurry, t0_batch, pars, steps*dt)
 
 for cum in cum_lyaps:
     plt.plot(cum)

@@ -9,10 +9,10 @@ from os.path import dirname
 sys.path.insert(1, dirname(dirname(__file__)))
 
 from src.flows import samelson_flow, trajectory_plot, stream_plot
-from src.lyapunov import flow_lyapunov_spectrum, make_batch_lyapunov_solver, kaplan_yorke_dim, boxcount_dimension, poincare_sos
+from src.lyapunov import *
 
 jax.config.update("jax_enable_x64", True)
-
+FIG_PATH = dirname(dirname(__file__)) + "/figs/"
 
 # Choose the dynamic system to be simulated
 # Along with its parameters
@@ -23,6 +23,14 @@ pars = {
     "h": 0.07,
     "wf": 0.058,
 }
+
+unp_pars = {
+    "A0": 1.064,
+    "C": 0.25,
+    "L": 2,
+    "h": 0,
+    "wf": 0.058,
+} 
 
 rhs = lambda t, z, args: samelson_flow(t, z, args)
 
@@ -36,18 +44,59 @@ stream_plot(X, Y, U, V, density=5)
 # Initial conditions, Total T, dt, total size, dx, ...
 
 # Trajectory in the chaos
-z0 = jnp.array([-1.9546, -2.1656])
-Tot_T = 3800
-timesteps = np.linspace(0, Tot_T, 9000)
-dt = 0.01
+#z0 = jnp.array([-1.9546, -2.1656])
+z0 = jnp.array([-np.pi/2, 0])
 
 # Integration
-solver = dfx.Kvaerno5()
-stepsc = dfx.PIDController(rtol=1e-8, atol=1e-8)
+Tot_T = 6000
+dt = 0.01
+
 term = dfx.ODETerm(rhs)
+
+solver = dfx.Kvaerno5()
+stepsc = dfx.PIDController(rtol=1e-8, atol=1e-12)
+
+timesteps = np.linspace(0, Tot_T, 15000)
 saveat = dfx.SaveAt(ts=timesteps)
 
-first = dfx.diffeqsolve(
+steps = 1
+N_int = 2e5
+burns = 0.3
+
+# Analysis
+boxes = np.logspace(-3, 1, 15)
+
+# Calculate lyapunov spectrum
+traject, cums = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars,
+                                   dt=dt, interval=steps*dt, n_intervals=Tot_T/(steps*dt), stepsize=stepsc, burn_in=int(N_int*burns))
+
+# Plot of the trajectory (perturbed)
+first = traject.transpose()
+trajectory_plot(first[0], first[1], save=FIG_PATH + "Sam_Path.png")
+
+# Wrapped plot
+ax, first_w = plot_wrapped(first[0], first[1])
+plt.savefig(FIG_PATH + "Sam_Wrapped_path.png", dpi=1500)
+plt.show()
+
+# Lyapunov extimate over iterations
+print(f'Estimated mLCE (map) for initial condition {z0}: {cums[-1]}')
+plt.plot(cums)
+plt.show()
+
+hdim = kaplan_yorke_dim(cums[-1])
+print(f'Kaplan-Yorke extimate: {hdim}')
+
+# Box counting plotting
+ax, D = boxcount_plot(trajectory=np.array([(first[0] + np.pi) % (2* np.pi) - np.pi, first[1]]).transpose()[5000: ,:], 
+                     box_sizes=boxes)
+plt.savefig(FIG_PATH + "Path_boxcount.png", dpi=1500)
+plt.show()
+
+print("="*35 + " UNPERTURBED MAP " + "="*35)
+
+# Unperturbed map for reference
+"""unpert = dfx.diffeqsolve(
     term,
     solver,
     t0=0,
@@ -55,99 +104,33 @@ first = dfx.diffeqsolve(
     dt0=dt,
     y0=z0,
     saveat=saveat,
-    args=pars,
+    args=unp_pars,
     max_steps=1200000,
     stepsize_controller=stepsc,
-).ys.transpose()
+).ys.transpose()"""
+
+unpert, unpert_cums = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=unp_pars,
+                                   dt=dt, interval=steps*dt, n_intervals=Tot_T/(steps*dt), stepsize=stepsc, burn_in=int(N_int*burns))
 
 # Plot of the trajectory
-trajectory_plot(first[0], first[1])
+unpert = unpert.transpose()
+trajectory_plot(unpert[0], unpert[1], save=FIG_PATH + "Sam_unpert_Path.png")
 
 # Wrapped plot
-wrapped = (np.array(first[0]) + np.pi)% 2* np.pi - np.pi
-jump_idx = np.where(np.abs(np.diff(wrapped)) > np.pi)[0]
-
-xw_plot = wrapped.copy()
-xw_plot[jump_idx + 1] = np.nan
-
-x_segments = np.split(xw_plot, jump_idx + 1)
-y_segments = np.split(np.array(first[1]), jump_idx + 1)
-
-for ys, xs in zip(y_segments, x_segments):
-    plt.plot(xs, ys)
+ax, unpert_w = plot_wrapped(unpert[0], unpert[1])
+plt.savefig(FIG_PATH + "Sam_unpert_Wrapped_path.png", dpi=1500)
 plt.show()
 
-# Poincaré surface of section
-# I would need a func that:
-# Input = ndarray, indexes list, criterion (a crossing or modulo op)
-#times, p_idxs = poincare_sos(timesteps, section_val=0, tol=1e-2)
-
-
-# Calculate lyapunov spectrum
-steps = 1
-N_int = 2e5
-burns = 0.3
-traject, cums = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars,
-                                   dt=dt, interval=steps*dt, n_intervals=N_int, stepsize=stepsc, burn_in=int(N_int*burns))
-
-traject = traject.transpose()
-trajectory_plot(*traject)
-
-print(f'Estimated mLCE (map) for initial condition {z0}: {cums[-1]}')
-plt.plot(cums)
-plt.show()
-# Whomp whomp :(
-hdim = kaplan_yorke_dim(cums[-1])
-print(f'Kaplan-Yorke extimate: {hdim}')
-
-
-# EXPERIMENT PROPER:
-# Prep: 
-# GRAPH 2: K-Y Extimate dimension (in function of lyapunov exponents iterations)
-# GRAPH 3: BOX COUNTING PLOT
-
-flurry = jnp.array([jnp.array([-1.2, -1]), jnp.array([-2, 2]), jnp.array([2, 2]),
-                    jnp.array([3, 1]), jnp.array([1, 4]), jnp.array([-3, 3]),
-                    jnp.array([-2, -6]), jnp.array([10, -2]), jnp.array([-7, 3]),
-                    ])
-t0_batch = jnp.zeros(len(flurry))
-
-compute = make_batch_lyapunov_solver(flow=rhs, solver=solver, dt=dt, stepsize=stepsc, n_intervals=N_int, burn_in=int(N_int*burns), jacobian=False)
-batched_lyap = jax.jit(
-    jax.vmap(compute, in_axes=(0, 0, None, None))
-)
-
-trajects, cum_lyaps = batched_lyap(flurry, t0_batch, pars, steps*dt)
-
-for cum in cum_lyaps:
-    plt.plot(cum)
-plt.grid(True)
+# Lyapunov extimate over iterations
+print(f'Estimated mLCE (map) for initial condition {z0}: {unpert_cums[-1]}')
+plt.plot(unpert_cums)
 plt.show()
 
-cum_dims = kaplan_yorke_dim(cum_lyaps)
+unpert_hdim = kaplan_yorke_dim(unpert_cums[-1])
+print(f'Kaplan-Yorke extimate: {unpert_hdim}')
 
-for cum in cum_dims:
-    plt.plot(cum)
-plt.grid(True)
-plt.show()
-
-D, sizes, counts, i0, i1 = boxcount_dimension(np.array((np.array(first) + np.pi)% 2* np.pi - np.pi).transpose()[5000: ,:])
-print(f"Box counting extimate: {D}")
-
-log_s = np.log10(1 / sizes)
-log_c = np.log10(counts)
-
-s_fit = np.array([log_s[i0], log_s[i1]])
-c_fit = np.polyval(np.polyfit(log_s[i0:i1+1], log_c[i0:i1+1], 1), s_fit)
-
-fig, ax = plt.subplots()
-ax.loglog(1 / sizes, counts, 'o', label='all scales')
-ax.loglog(1 / sizes[i0:i1+1], counts[i0:i1+1], 'o', color='red', label='linear region')
-
-# Convert back from log10 space to data space for the fit line
-ax.loglog(10**s_fit, 10**c_fit, '--', label=f'fit D={D:.3f}')
-
-ax.set_xlabel('1/r (inverse box size)')
-ax.set_ylabel('N(r) (box count)')
-ax.legend(); plt.grid(True)
+# Box counting plotting
+ax, D = boxcount_plot(trajectory=np.array([(unpert[0] + np.pi) % (2* np.pi) - np.pi, unpert[1]]).transpose()[5000: ,:], 
+                     box_sizes=boxes)
+plt.savefig(FIG_PATH + "Unpert_Path_boxcount.png", dpi=1500)
 plt.show()

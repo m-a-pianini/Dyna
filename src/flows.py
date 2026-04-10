@@ -113,13 +113,15 @@ def duffing(t, z, params):
     return jnp.array([dx, dy])
 
 # Visualization utils
-def trajectory_plot(x, y):
+def trajectory_plot(x, y, save=None):
     plt.figure(figsize=(8,4))
     plt.plot(x, y)
     plt.xlabel("x")
     plt.ylabel("y")
     plt.title("Simple plot")
     plt.grid(True)
+    if save is not None:
+        plt.savefig(save)
     plt.show()
 
 def stream_plot(X, Y, U , V, density = 2):

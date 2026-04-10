@@ -1,5 +1,6 @@
 from typing import Callable, Tuple, Iterable
 from functools import partial
+import matplotlib.pyplot as plt
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -20,6 +21,80 @@ def poincare_sos(traj: np.ndarray, time_array: np.ndarray | None = None,
 
     idxes = np.where(np.abs(traj[section_index] - section_val) <= tol)[0]
     return traj[idxes], idxes
+
+def plot_wrapped(
+    x: np.ndarray,
+    y: np.ndarray,
+    wrap_axis: str = "x",
+    period: float = 2 * np.pi,
+    center: float = 0.0,
+    ax: plt.Axes | None = None,
+    **plot_kwargs,
+) -> plt.Axes:
+    """
+    Plot a curve with one axis wrapped to a given period.
+
+    Parameters:
+        x:           1D array of x values
+        y:           1D array of y values
+        wrap_axis:   Which axis to wrap, 'x' or 'y'
+        period:      Wrapping period (default: 2π)
+        center:      Center of the wrapped range; the output lies in
+                     [center - period/2, center + period/2) (default: 0)
+        ax:          Matplotlib axes to plot into; creates a new figure if None
+        **plot_kwargs: Passed directly to ax.plot()
+
+    Returns:
+        The axes object
+    """
+    if ax is None:
+        _, ax = plt.subplots()
+
+    data = np.asarray(x if wrap_axis == "x" else y, dtype=float)
+    other = np.asarray(y if wrap_axis == "x" else x, dtype=float)
+
+    # Wrap to [center - period/2, center + period/2)
+    wrapped = (data - center + period / 2) % period + center - period / 2
+
+    # Detect discontinuities and insert NaN to break the line
+    jump_idx = np.where(np.abs(np.diff(wrapped)) > period / 2)[0]
+    plot_data = wrapped.copy()
+    plot_data[jump_idx + 1] = np.nan
+
+    if wrap_axis == "x":
+        ax.plot(plot_data, other, **plot_kwargs)
+    else:
+        ax.plot(other, plot_data, **plot_kwargs)
+
+    return ax, np.array([plot_data, other])
+
+def boxcount_plot(
+    trajectory: np.ndarray,
+    box_sizes: np.ndarray | None = None,
+    n_sizes: int = 20,
+    min_points: int = 5,
+) -> tuple[float, np.ndarray, np.ndarray, int, int]:
+    
+    D, sizes, counts, i0, i1 = boxcount_dimension(trajectory, box_sizes, n_sizes, min_points)
+    print(f"Box counting extimate: {D}")
+
+    log_s = np.log10(1 / sizes)
+    log_c = np.log10(counts)
+
+    s_fit = np.array([log_s[i0], log_s[i1]])
+    c_fit = np.polyval(np.polyfit(log_s[i0:i1+1], log_c[i0:i1+1], 1), s_fit)
+
+    _, ax = plt.subplots()
+    ax.loglog(1 / sizes, counts, 'o', label='all scales')
+    ax.loglog(1 / sizes[i0:i1+1], counts[i0:i1+1], 'o', color='red', label='linear region')
+
+    # Convert back from log10 space to data space for the fit line
+    ax.loglog(10**s_fit, 10**c_fit, '--', label=f'fit D={D:.3f}')
+
+    ax.set_xlabel('1/r (inverse box size)')
+    ax.set_ylabel('N(r) (box count)')
+    ax.legend(); plt.grid(True)
+    return ax, D
 
 # Algorithms for calculating lyapunov exponent(s)
 

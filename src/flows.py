@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.integrate import solve_ivp
+import sympy
 import matplotlib.pyplot as plt
 import jax
 import jax.numpy as jnp
@@ -54,6 +55,25 @@ def ichikievich(t, z, params):
 
     return jnp.array([du, dv])
 
+def lorenz_system(t, z, params):
+
+    sigma = params.get('sigma', 16.0)
+    rho = params.get('rho', 45.92)
+    beta = params.get('beta', 4.0)
+
+    X, Y, Z = z
+
+    dx = sigma*(Y-X)
+    dy = X*(rho - Z) - Y
+    dz = X*Y - beta*Z
+
+    return jnp.array([dx, dy, dz])
+
+def samelson_phi(t, z, params):
+    pass
+# TODO: this has to be a symbolic formula to be differentiated and called with subs in the function below
+_samelson_phi_poly = sympy.Add()
+# TODO: lambdify
 def samelson_flow(t, z, params):
     """
     Calculate flow function for Samelson's model of the Bjerknes jet.
@@ -77,24 +97,27 @@ def samelson_flow(t, z, params):
     derivatives : array-like
         Time derivatives [du/dt, dv/dt, dT/dt]
     """
-    boundaries = params.get("boundaries", "pbc")
+
     A0 = params.get('A0', 1.0)
     C = params.get('C', 0.25)
-    L = params.get('L', 2)
+    L = params.get('L', 2.0)
 
-    h = params.get('h', 0)
-    wf = params.get('wf', 1)
+    h = params.get('h', 0.0)
+    wf = params.get('wf', 1.0)
 
     z = jnp.array(z, dtype=jnp.float64)
     x, y = z
 
     A = A0 + h*jnp.cos(wf*t)
-
     B = (y - A*jnp.cos(x))/ (L * jnp.sqrt(1+(A*jnp.sin(x))**2))
     phi = -jnp.tanh(B) + C*y
 
-    phi_x = ((A*jnp.sin(x)* L*jnp.sqrt(1+(A*jnp.sin(x))**2) - (((y - A*jnp.cos(x))*L*((A**2)*jnp.sin(2*x))) / (2* jnp.sqrt(1+(A*jnp.sin(x))**2))) ) / ((1+(A*jnp.sin(x))**2)*(L**2)))  *  ((jnp.tanh(B))**2 - 1)
+    #phi_x = ((A*jnp.sin(x)* L * jnp.sqrt(1+(A*jnp.sin(x))**2) - (((y - A*jnp.cos(x))*L*((A**2)*jnp.sin(2*x))) / (2* jnp.sqrt(1+(A*jnp.sin(x))**2))) ) / ((1+(A*jnp.sin(x))**2)*(L**2)))  *  ((jnp.tanh(B))**2 - 1)
     phi_y = C - (1 - (jnp.tanh(B))**2)*(1/(L * jnp.sqrt(1+(A*jnp.sin(x))**2)))
+
+    phi_x = (jnp.tanh(B)**2 - 1)/L * (A*jnp.sin(x)/(jnp.sqrt(1+(A*jnp.sin(x))**2))
+                                        + jnp.sin(2*x) * (A*jnp.cos(x) * (A**2)
+                                            - y*(A**2)) / (2*(1+(A*jnp.sin(x))**2)**(3/2)))
     
     return jnp.array([-phi_y, phi_x])
 

@@ -19,23 +19,27 @@ FIG_PATH = dirname(dirname(__file__)) + "/figs/"
 pars = {
     "A0": 1.064,
     "C": 0.25,
-    "L": 2,
-    "h": 0.07,
+    "L": 2.0,
+    "h": 0.1,
     "wf": 0.058,
 }
 
 unp_pars = {
     "A0": 1.064,
     "C": 0.25,
-    "L": 2,
-    "h": 0,
+    "L": 2.0,
+    "h": 0.0,
     "wf": 0.058,
-} 
+}
 
 rhs = lambda t, z, args: samelson_flow(t, z, args)
 
 # Flow visualization
 X, Y = np.meshgrid(np.linspace(-2*np.pi, 2*np.pi, 400), np.linspace(-5, 5, 400))
+U, V = samelson_flow(t=0, z=(X, Y), params=unp_pars)
+
+stream_plot(X, Y, U, V, density=5)
+
 U, V = samelson_flow(t=0, z=(X, Y), params=pars)
 
 stream_plot(X, Y, U, V, density=5)
@@ -60,15 +64,14 @@ timesteps = np.linspace(0, Tot_T, 15000)
 saveat = dfx.SaveAt(ts=timesteps)
 
 steps = 1
-N_int = 2e5
 burns = 0.3
 
 # Analysis
-boxes = np.logspace(-3, 1, 15)
+boxes = np.logspace(-3, 1, 20)
 
 # Calculate lyapunov spectrum
 traject, cums = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars,
-                                   dt=dt, interval=steps*dt, n_intervals=Tot_T/(steps*dt), stepsize=stepsc, burn_in=int(N_int*burns))
+                                   dt=dt, interval=steps*dt, n_intervals=Tot_T/(steps*dt), stepsize=stepsc, burn_in=int(Tot_T/(steps*dt)*burns))
 
 # Plot of the trajectory (perturbed)
 first = traject.transpose()
@@ -110,7 +113,7 @@ print("="*35 + " UNPERTURBED MAP " + "="*35)
 ).ys.transpose()"""
 
 unpert, unpert_cums = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=unp_pars,
-                                   dt=dt, interval=steps*dt, n_intervals=Tot_T/(steps*dt), stepsize=stepsc, burn_in=int(N_int*burns))
+                                   dt=dt, interval=steps*dt, n_intervals=Tot_T/(steps*dt), stepsize=stepsc, burn_in=int(Tot_T/(steps*dt)*burns))
 
 # Plot of the trajectory
 unpert = unpert.transpose()

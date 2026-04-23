@@ -74,6 +74,7 @@ def samelson_phi(t, z, params):
 # TODO: this has to be a symbolic formula to be differentiated and called with subs in the function below
 _samelson_phi_poly = sympy.Add()
 # TODO: lambdify
+
 def samelson_flow(t, z, params):
     """
     Calculate flow function for Samelson's model of the Bjerknes jet.
@@ -113,7 +114,7 @@ def samelson_flow(t, z, params):
     phi = -jnp.tanh(B) + C*y
 
     #phi_x = ((A*jnp.sin(x)* L * jnp.sqrt(1+(A*jnp.sin(x))**2) - (((y - A*jnp.cos(x))*L*((A**2)*jnp.sin(2*x))) / (2* jnp.sqrt(1+(A*jnp.sin(x))**2))) ) / ((1+(A*jnp.sin(x))**2)*(L**2)))  *  ((jnp.tanh(B))**2 - 1)
-    phi_y = C - (1 - (jnp.tanh(B))**2)*(1/(L * jnp.sqrt(1+(A*jnp.sin(x))**2)))
+    phi_y = C - (1 - (jnp.tanh(B))**2) / (L * jnp.sqrt(1+(A*jnp.sin(x))**2))
 
     phi_x = (jnp.tanh(B)**2 - 1)/L * (A*jnp.sin(x)/(jnp.sqrt(1+(A*jnp.sin(x))**2))
                                         + jnp.sin(2*x) * (A*jnp.cos(x) * (A**2)
@@ -162,10 +163,10 @@ if __name__ == "__main__":
     # Test plot to see if the map is correct
     # it is :,)
     samelsons_pars = {
-        "A0": 1.064,
-        "C": 0.2,
-        "L": 1.8,
-        "h": 0.01,
+        "A0": 0.5,
+        "C": 0.25,
+        "L": 2,
+        "h": 0*0.3,
         "wf": 0.058,
     }
 
@@ -190,27 +191,31 @@ if __name__ == "__main__":
     rhs = lambda t, z, args: samelson_flow(t, z, args)
 
     # 2: Initial condition
-    z0 = jnp.array([-2, -1])
+    z0 = jnp.array([-jnp.pi/2, 0])
 
     # 3: solver
-    solver = dfx.Dopri5()
+    solver = dfx.Kvaerno5()
     
+    # optional (but not for all solvers): stepsize controller
+    stepsc = dfx.PIDController(rtol=1e-8, atol=1e-8)
+
     # 4: vector field term
     term = dfx.ODETerm(rhs)
 
     # 5: savepoints (Important: this are the instants at which the solution is recorded)
-    saveat = SaveAt(ts=jnp.linspace(0, 100, 1000))
+    saveat = SaveAt(ts=jnp.linspace(0, 300, 3000))
 
     sol = dfx.diffeqsolve(
         term,
         solver,
         t0=0,
-        t1=100,
-        dt0=0.01,
+        t1=300,
+        dt0=0.001,
         y0=z0,
         saveat=saveat,
         args=samelsons_pars,
-        max_steps=120000
+        max_steps=12000000,
+        stepsize_controller=stepsc
     )
     print(sol.ys)
 
@@ -218,5 +223,8 @@ if __name__ == "__main__":
     y = sol.ys.transpose()[1]
     print(sol.ys.shape, x[0], y[0])
 
-    trajectory_plot(x, y)
+    plt.figure()
+    plt.scatter(x, y)
+    plt.show()
+    #trajectory_plot()
     

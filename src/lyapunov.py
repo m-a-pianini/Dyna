@@ -29,6 +29,7 @@ def plot_wrapped(
     period: float = 2 * np.pi,
     center: float = 0.0,
     ax: plt.Axes | None = None,
+    kind: str | None = None,
     **plot_kwargs,
 ) -> plt.Axes:
     """
@@ -61,10 +62,14 @@ def plot_wrapped(
     plot_data = wrapped.copy()
     plot_data[jump_idx + 1] = np.nan
     
-    if wrap_axis == "x":
-        ax.plot(plot_data, other, **plot_kwargs)
-    else:
-        ax.plot(other, plot_data, **plot_kwargs)
+    if wrap_axis != "x":
+        plot_data, other = other, plot_data
+    
+    match kind:
+        case "scatter":
+            ax.scatter(plot_data, other, **plot_kwargs)
+        case _:
+            ax.plot(plot_data, other, **plot_kwargs)
 
     return ax, np.array([plot_data, other])
 
@@ -171,10 +176,27 @@ def mLCE_flow(f: Callable[[float, np.ndarray], np.ndarray], y0: np.ndarray, t: n
     # The result is a sum of the logs of all these expansions
     return s / (t[-1] - t[0])
 
+
+@partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "save_at", "stepsize"))
+def flow_mLCE(
+    flow: Callable,
+    solver,
+    z0,
+    t0=0.0,
+    params=None,
+    dt=0.01,
+    interval=1,
+    n_intervals=1000,
+    burn_in=100,
+    save_at=dfx.SaveAt(t1=True),
+    stepsize=dfx.ConstantStepSize()
+):
+    pass
+
 # Full spectrum
 # TODO: fixed total time
 # Jax-JIT compilation for speed
-@partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "save_at", "stepsize", "jacobian"))
+@partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "stepsize", "jacobian"))
 def flow_lyapunov_spectrum(
     flow: Callable,
     solver,
@@ -217,7 +239,7 @@ def flow_lyapunov_spectrum(
 
     term = dfx.ODETerm(augmented_rhs)
 
-    def integrate(state, t0):
+    def integrate(state, t0, saver):
 
         sol = dfx.diffeqsolve(
             term,
@@ -226,20 +248,25 @@ def flow_lyapunov_spectrum(
             t1=t0 + interval,
             dt0=dt,
             y0=state,
-            saveat=save_at,
+            saveat=saver,
             stepsize_controller=stepsize,
         )
 
-        return sol.ys
+        return sol.ys, sol.ts
 
     def step(carry, k):
 
-        state, t, lyap = carry
+        _state0, t, lyap = carry        
 
-        state = integrate(state, t)[-1]
+        if isinstance(save_at, jnp.ndarray):
+            saver = dfx.SaveAt(t1=True, ts=save_at + t)
+        else:
+            saver = save_at
 
-        z = state[:z_dim]
-        Q = state[z_dim:].reshape((z_dim, z_dim))
+        sol, ts = integrate(_state0, t, saver)
+
+        z = sol[-1, :z_dim]
+        Q = sol[-1, z_dim:].reshape((z_dim, z_dim))
 
         Q, R = jnp.linalg.qr(Q)
 
@@ -250,7 +277,7 @@ def flow_lyapunov_spectrum(
         current_time = (k + 1) * interval
         lam_est = lyap / current_time
 
-        seq = jnp.array([z, lam_est])
+        seq = jnp.array([sol[:, :z_dim], jnp.full_like(sol[:, :z_dim], lam_est),  jnp.repeat(ts[..., jnp.newaxis], z_dim, axis=-1)])
 
         return (state, t + interval, lyap), seq
 
@@ -271,9 +298,20 @@ def flow_lyapunov_spectrum(
     state, t, lyap = carry
 
     total_time = interval * remaining
+    
+    # Zeroth axis: iteration
+    # First axis: traj vs lyapunov vs time
+    # Second axis: iteration time step
+    # Third axis: dimension
     traj = jnp.concat([ser0[:, 0, ...], ser[:, 0, ...]])
-    lyap_ext = ser[:, 1, ...]
-    return traj, lyap_ext
+    traj = jnp.concat(traj)
+
+    lyap_ext = ser[:, 1, 0, ...]
+
+    times = jnp.concat([ser0[:, 2, ...,0], ser[:, 2, ..., 0]])
+    times = jnp.concat(times)
+    return traj, lyap_ext, times
+
 
 @partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "save_at", "stepsize", "jacobian"))
 def fast_flow_lyapunov_spectrum(
@@ -370,7 +408,7 @@ def fast_flow_lyapunov_spectrum(
     return lyap/total_time
 
 # Efficient many-trajectories lyapunov exponent calculation
-def make_batch_lyapunov_solver(flow, solver, dt, n_intervals, stepsize, burn_in, jacobian=True):
+def make_batch_lyapunov_solver(flow, solver, dt, n_intervals, stepsize, burn_in, jacobian=True, save_at=dfx.SaveAt(t1=True)):
 
     @partial(jax.jit, static_argnames=())
     def compute(z0, t0, params, interval):
@@ -385,6 +423,7 @@ def make_batch_lyapunov_solver(flow, solver, dt, n_intervals, stepsize, burn_in,
             interval=interval,
             n_intervals=n_intervals,
             burn_in=burn_in,
+            save_at=save_at,
             stepsize=stepsize,
             jacobian=jacobian,
         )
@@ -430,6 +469,10 @@ for i in range(0, len(z0_all), batch_size):
     results.append(lam)
 
 cum_lyaps = jnp.concatenate(results, axis=0)"""
+
+# TODO: bifurcation diagram of a map
+
+
 
 # Fractal dimension extimation 
 def kaplan_yorke_dim(lyaps: jnp.ndarray):

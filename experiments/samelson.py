@@ -20,8 +20,8 @@ pars = {
     "A0": 0.5,
     "C": 0.25,
     "L": 2.0,
-    "h": 0.4,
-    "wf": 0.06,
+    "h": 0.05,
+    "wf": 0.2133,
 }
 
 unp_pars = pars.copy()
@@ -58,7 +58,7 @@ term = dfx.ODETerm(rhs)
 solver = dfx.Kvaerno5()
 stepsc = dfx.PIDController(rtol=1e-8, atol=1e-12)
 
-timesteps = jnp.linspace(0, steps*dt, 10)
+timesteps = jnp.linspace(0, steps*dt, 60)
 saveat = dfx.SaveAt(t1=True, ts=timesteps)
 
 
@@ -66,7 +66,7 @@ saveat = dfx.SaveAt(t1=True, ts=timesteps)
 boxes = np.logspace(-3, 1, 20)
 
 # Calculate lyapunov spectrum
-traject, cums, times = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars, 
+traject, cums, times = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars, save_at=timesteps,
                                    dt=dt, interval=steps*dt, n_intervals=n_inters, stepsize=stepsc, burn_in=int(n_inters*burns))
 
 # Plot of the trajectory (perturbed)
@@ -80,14 +80,27 @@ trajectory_plot(times, first[0])
 # Wrapped plot
 ax, first_w = plot_wrapped(first[0], first[1], linewidth=0.65)
 
-BOTH = False
+BOTH = True
 if BOTH:
-    traject2, cums2, times2 = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=jnp.array([-np.pi/2, 1]), params=pars,
+    traject2, cums2, times2 = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=jnp.array([-np.pi/2, 1]), params=pars, save_at=timesteps,
                                     dt=dt, interval=steps*dt, n_intervals=n_inters, stepsize=stepsc, burn_in=int(n_inters*burns))
     second = traject2.transpose()
     plot_wrapped(second[0], second[1], ax=ax, linewidth=0.65)
     plt.savefig(FIG_PATH + "Sam_Wrapped_path_" + str(pars["h"]) + "_" + str(pars["wf"]) + "_2.png", dpi=1500)
     plt.show()
+
+    period = 2*np.pi/pars["wf"]
+    poinc_t, idx = poincare_sos(tim, 0, timesteps[1] - timesteps[0] - 1e-5, period, 0)
+    poinc_x = first[0, idx]
+    poinc_y = first[1, idx]
+
+    ax, first_w = plot_wrapped(poinc_x, poinc_y, kind="scatter", s=3)
+
+    poinc_t2, idx2 = poincare_sos(times2, 0, timesteps[1] - timesteps[0] - 1e-5, period, 0)
+    plot_wrapped(second[0, idx2], second[1, idx2], ax=ax, kind="scatter", s=3)
+    plt.savefig(FIG_PATH + "Sam_SOS_" + str(pars["h"]) + "_" + str(pars["wf"]) + "_2.png", dpi=1500)
+    plt.show()
+
     exit()
 else:
     plt.savefig(FIG_PATH + "Sam_Wrapped_path_" + str(pars["h"]) + "_" + str(pars["wf"]) + ".png", dpi=1500)

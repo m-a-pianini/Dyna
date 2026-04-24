@@ -11,16 +11,22 @@ jax.config.update("jax_enable_x64", True)
 #u are cute <3
 # Visualisation utils
 # TODO: implement this
-def poincare_sos(traj: np.ndarray, time_array: np.ndarray | None = None,
-                  section_index: int = 0, section_val: float = 0, tol: float = 1e-6) -> np.ndarray:
+def poincare_sos(data: np.ndarray | None = None, section_val: float = 0, tol: float = 1e-6,
+                     wrap_period: float | None = None, center: float = 0) -> np.ndarray:
     """Extract points near a Poincaré section defined by a coordinate index (zero crossing not implemented).
 
     This simple helper collects states where coordinate at section_index is near zero (within tol).
+
+    data should have shape (n,)
     """
+    if wrap_period is not None:
+        wrapped = (data - center + wrap_period / 2) % wrap_period + center - wrap_period / 2
+        idxes = np.where(np.abs(wrapped - section_val) <= tol)[0]
+    else:
+        idxes = np.where(np.abs(data - section_val) <= tol)[0]
     # optional function/series of points
 
-    idxes = np.where(np.abs(traj[section_index] - section_val) <= tol)[0]
-    return traj[idxes], idxes
+    return data[idxes], idxes
 
 def plot_wrapped(
     x: np.ndarray,

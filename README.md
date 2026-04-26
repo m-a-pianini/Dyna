@@ -1,4 +1,4 @@
-# Dynamical Systems Analysis
+# DYNamical systems Analysis
 
 This repository studies nonlinear dynamical systems using Lyapunov exponent estimation and fractal dimension analysis. It combines numerical flow definitions, trajectory visualization, and tools for quantifying chaos using both map and continuous-time systems.
 The algorithm used for doing this is from Benettin et al. (1980), implemented via QR decomposition of the tangent system matrix.

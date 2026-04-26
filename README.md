@@ -1,10 +1,11 @@
 # Dynamical Systems Analysis
 
 This repository studies nonlinear dynamical systems using Lyapunov exponent estimation and fractal dimension analysis. It combines numerical flow definitions, trajectory visualization, and tools for quantifying chaos using both map and continuous-time systems.
+The algorithm used for doing this is from Benettin et al. (1980), implemented via QR decomposition of the tangent system matrix.
 
 ## Repository Overview
 
-- `src/lyapunov.py` - Core utilities for computing Lyapunov exponents, box-counting fractal dimension, Poincaré section extraction, and other diagnostic functions.
+- `src/lyapunov.py` - Core utilities for integration and computing Lyapunov exponents, box-counting fractal dimension, Poincaré section extraction, and other diagnostic and visualization functions (to be split in more files).
 - `src/flows.py` - Example dynamical systems and flow definitions, including the Samelson/Bjerknes jet model, Lorenz system, Duffing oscillator, and Hamiltonian flow wrapper.
 - `experiments/` - Notebooks and scripts for exploratory analysis, visualization, and parameter sweeps.
 - `figs/`, `figs_backflow/`, `figs_interpars/` - Output directories for generated figures and plots.

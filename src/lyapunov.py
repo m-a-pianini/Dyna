@@ -10,7 +10,7 @@ jax.config.update("jax_enable_x64", True)
 
 #u are cute <3
 # Visualisation utils
-# TODO: implement this
+
 def poincare_sos(data: np.ndarray | None = None, section_val: float = 0, tol: float = 1e-6,
                      wrap_period: float | None = None, center: float = 0) -> np.ndarray:
     """Extract points near a Poincaré section defined by a coordinate index (zero crossing not implemented).
@@ -182,7 +182,7 @@ def mLCE_flow(f: Callable[[float, np.ndarray], np.ndarray], y0: np.ndarray, t: n
     # The result is a sum of the logs of all these expansions
     return s / (t[-1] - t[0])
 
-
+# TODO: implement this
 @partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "save_at", "stepsize"))
 def flow_mLCE(
     flow: Callable,
@@ -200,8 +200,19 @@ def flow_mLCE(
     pass
 
 # Full spectrum
-# TODO: fixed total time
-# Jax-JIT compilation for speed
+
+def map_lyapunov_spectrum(
+    map: Callable,
+    z0,
+    t0=0.0,
+    params=None,
+    interval=1,
+    n_intervals=1000,
+    burn_in=100,
+    jacobian=True
+):
+    pass
+
 @partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "stepsize", "jacobian"))
 def flow_lyapunov_spectrum(
     flow: Callable,
@@ -318,7 +329,6 @@ def flow_lyapunov_spectrum(
     times = jnp.concat(times)
     return traj, lyap_ext, times
 
-
 @partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "save_at", "stepsize", "jacobian"))
 def fast_flow_lyapunov_spectrum(
     flow: Callable,
@@ -413,9 +423,26 @@ def fast_flow_lyapunov_spectrum(
     total_time = interval * remaining
     return lyap/total_time
 
-# Efficient many-trajectories lyapunov exponent calculation
+# Efficient many-trajectories (vmappable) lyapunov exponent calculation
 def make_batch_lyapunov_solver(flow, solver, dt, n_intervals, stepsize, burn_in, jacobian=True, save_at=dfx.SaveAt(t1=True)):
+    """
+    # Example usage:
+    compute = make_batch_lyapunov_solver(flow=rhs, solver=solver, dt=dt, stepsize=stepsc, n_intervals=N_iters, burn_in=50, jacobian=False)
+    batched_lyap = jax.jit(
+        jax.vmap(compute, in_axes=(0, 0, None, None))
+    )
 
+    cum_lyaps = batched_lyap(jnp.array([[0., 0], [1, 1]]), t0_batch, pars, steps*dt)
+
+    # Alternative for memory filling
+    results = []
+    z0_all = jnp.array([[0., 0], [1, 1]])
+    for i in range(0, len(z0_all), batch_size):
+        z_chunk = z0_all[i:i+batch_size]
+        lam = batched_lyap(z_chunk, t0_batch, pars, steps*dt)
+        results.append(lam)
+
+    cum_lyaps = jnp.concatenate(results, axis=0)"""
     @partial(jax.jit, static_argnames=())
     def compute(z0, t0, params, interval):
 
@@ -437,7 +464,24 @@ def make_batch_lyapunov_solver(flow, solver, dt, n_intervals, stepsize, burn_in,
     return compute
 
 def make_batch_fast_lyapunov(flow, solver, dt, n_intervals, stepsize, burn_in, jacobian=True):
+    """
+    # Example usage:
+    compute = make_batch_lyapunov_solver(flow=rhs, solver=solver, dt=dt, stepsize=stepsc, n_intervals=N_iters, burn_in=50, jacobian=False)
+    batched_lyap = jax.jit(
+        jax.vmap(compute, in_axes=(0, 0, None, None))
+    )
 
+    cum_lyaps = batched_lyap(jnp.array([[0., 0], [1, 1]]), t0_batch, pars, steps*dt)
+
+    # Alternative for memory filling
+    results = []
+    z0_all = jnp.array([[0., 0], [1, 1]])
+    for i in range(0, len(z0_all), batch_size):
+        z_chunk = z0_all[i:i+batch_size]
+        lam = batched_lyap(z_chunk, t0_batch, pars, steps*dt)
+        results.append(lam)
+
+    cum_lyaps = jnp.concatenate(results, axis=0)"""
     @partial(jax.jit, static_argnames=())
     def compute(z0, t0, params, interval):
 
@@ -457,30 +501,13 @@ def make_batch_fast_lyapunov(flow, solver, dt, n_intervals, stepsize, burn_in, j
 
     return compute
 
-"""
-# Example usage:
-compute = make_batch_lyapunov_solver(flow=rhs, solver=solver, dt=dt, stepsize=stepsc, n_intervals=N_iters, burn_in=50, jacobian=False)
-batched_lyap = jax.jit(
-    jax.vmap(compute, in_axes=(0, 0, None, None))
-)
-
-cum_lyaps = batched_lyap(jnp.array([[0., 0], [1, 1]]), t0_batch, pars, steps*dt)
-
-# Alternative for memory filling
-results = []
-z0_all = jnp.array([[0., 0], [1, 1]])
-for i in range(0, len(z0_all), batch_size):
-    z_chunk = z0_all[i:i+batch_size]
-    lam = batched_lyap(z_chunk, t0_batch, pars, steps*dt)
-    results.append(lam)
-
-cum_lyaps = jnp.concatenate(results, axis=0)"""
-
-# TODO: bifurcation diagram of a map
-
+# TODO: equilibrium point finder for flows and maps
+# TODO: jacobian analyzer flows/maps: trace, det, eigenvalues varying the parameters
+# TODO: bifurcation diagram of a flow/map: 
 
 
 # Fractal dimension extimation 
+
 def kaplan_yorke_dim(lyaps: jnp.ndarray):
     """
     Compute Kaplan–Yorke (Lyapunov) dimension.
@@ -522,7 +549,6 @@ def kaplan_yorke_dim(lyaps: jnp.ndarray):
 
     return dim
 
-# Box counting
 def count_boxes(trajectory: np.ndarray, box_size: float) -> int:
     """
     Count the number of boxes of given size needed to cover the trajectory.
@@ -651,7 +677,6 @@ def boxcount_dimension(
 
     return fractal_dimension, valid_sizes, valid_counts, lin_start, lin_end
 
-# Correlation dimension
 # TODO: fix this
 @partial(jax.jit, static_argnames=("n_scales",))
 def correlation_dimension(

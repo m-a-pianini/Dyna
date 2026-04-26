@@ -5,4 +5,5 @@ figs_backflow/
 *.png
 *.pyc
 __pycache__/
+/.vscode
 .vscode/

@@ -5,8 +5,8 @@ The algorithm used for doing this is from Benettin et al. (1980), implemented vi
 
 ## Repository Overview
 
-- `src/lyapunov.py` - Core utilities for integration and computing Lyapunov exponents, box-counting fractal dimension, Poincaré section extraction, and other diagnostic and visualization functions (to be split in more files).
-- `src/flows.py` - Example dynamical systems and flow definitions, including the Samelson/Bjerknes jet model, Lorenz system, Duffing oscillator, and Hamiltonian flow wrapper.
+- `dyna/lyapunov.py` - Core utilities for integration and computing Lyapunov exponents, box-counting fractal dimension, Poincaré section extraction, and other diagnostic and visualization functions (to be split in more files).
+- `dyna/flows.py` - Example dynamical systems and flow definitions, including the Samelson/Bjerknes jet model, Lorenz system, Duffing oscillator, and Hamiltonian flow wrapper.
 - `experiments/` - Notebooks and scripts for exploratory analysis, visualization, and parameter sweeps.
 - `figs/`, `figs_backflow/`, `figs_interpars/` - Output directories for generated figures and plots.
 
@@ -81,15 +81,15 @@ from dyna.lyapunov import plot_wrapped, boxcount_dimension, mLCE_flow
 
 ## Recommended Workflow
 
-1. Define the dynamical system in `src/flows.py` or create a new flow/map function.
+1. Define the dynamical system in `dyna/flows.py` or create a new flow/map function.
 2. Use Diffrax solvers and `dfx.ODETerm` to integrate trajectories.
-3. Apply Lyapunov and fractal dimension utilities from `src/lyapunov.py`.
+3. Apply Lyapunov and fractal dimension utilities from `dyna/lyapunov.py`.
 4. Visualize results in notebooks or save figures to `figs/`.
 
 ## Notes
 
 - Many exploratory calculations in `experiments/` rely on JAX and Diffrax for efficient numerical integration and automatic differentiation.
-- Some functions in `src/lyapunov.py` are still under active development and may include incomplete TODOs for extended spectrum computation and batch solvers.
+- Some functions in `dyna/lyapunov.py` are still under active development and may include incomplete TODOs for extended spectrum computation and batch solvers.
 
 ## Contribution
 
@@ -102,4 +102,4 @@ This repository is designed for research and coursework on dynamical systems. Co
 
 ---
 
-If you want to run a specific experiment or extend a model, start with `experiments/samelson.ipynb` and `src/lyapunov.py`.
+If you want to run a specific experiment or extend a model, start with `experiments/samelson.ipynb` and `dyna/lyapunov.py`.

@@ -8,8 +8,8 @@ import sys
 from os.path import dirname
 sys.path.insert(1, dirname(dirname(__file__)))
 
-from src.flows import samelson_flow, trajectory_plot, stream_plot
-from src.lyapunov import *
+from dyna.flows import samelson_flow, trajectory_plot, stream_plot
+from dyna.lyapunov import *
 
 jax.config.update("jax_enable_x64", True)
 FIG_PATH = dirname(dirname(__file__)) + "/figs_backflow/"
@@ -82,6 +82,11 @@ ax, first_w = plot_wrapped(first[0], first[1], linewidth=0.65)
 
 BOTH = True
 if BOTH:
+    period = 2*np.pi/pars["wf"]
+    poinc_t, idx = poincare_sos(tim, 0, (timesteps[1] - timesteps[0] - timesteps[1]*1e-3)/2, period, 0)
+    poinc_x = first[0, idx]
+    poinc_y = first[1, idx]
+
     traject2, cums2, times2 = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=jnp.array([-np.pi/2, 1]), params=pars, save_at=timesteps,
                                     dt=dt, interval=steps*dt, n_intervals=n_inters, stepsize=stepsc, burn_in=int(n_inters*burns))
     second = traject2.transpose()
@@ -89,14 +94,9 @@ if BOTH:
     plt.savefig(FIG_PATH + "Sam_Wrapped_path_" + str(pars["h"]) + "_" + str(pars["wf"]) + "_2.png", dpi=1500)
     plt.show()
 
-    period = 2*np.pi/pars["wf"]
-    poinc_t, idx = poincare_sos(tim, 0, timesteps[1] - timesteps[0] - 1e-5, period, 0)
-    poinc_x = first[0, idx]
-    poinc_y = first[1, idx]
-
     ax, first_w = plot_wrapped(poinc_x, poinc_y, kind="scatter", s=3)
 
-    poinc_t2, idx2 = poincare_sos(times2, 0, timesteps[1] - timesteps[0] - 1e-5, period, 0)
+    poinc_t2, idx2 = poincare_sos(times2, 0, (timesteps[1] - timesteps[0] - 1e-5)/2, period, 0)
     plot_wrapped(second[0, idx2], second[1, idx2], ax=ax, kind="scatter", s=3)
     plt.savefig(FIG_PATH + "Sam_SOS_" + str(pars["h"]) + "_" + str(pars["wf"]) + "_2.png", dpi=1500)
     plt.show()

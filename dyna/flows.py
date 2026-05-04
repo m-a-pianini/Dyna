@@ -1,5 +1,4 @@
 import numpy as np
-from scipy.integrate import solve_ivp
 import sympy
 import matplotlib.pyplot as plt
 import jax

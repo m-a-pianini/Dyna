@@ -10,8 +10,8 @@ import os
 cwd = os.getcwd()
 sys.path.append(cwd)
 
-from src.flows import duffing, trajectory_plot, stream_plot
-from src.lyapunov import flow_lyapunov_spectrum, make_batch_lyapunov_solver, kaplan_yorke_dim, boxcount_dimension, poincare_sos
+from dyna.flows import duffing, trajectory_plot, stream_plot
+from dyna.lyapunov import flow_lyapunov_spectrum, make_batch_lyapunov_solver, kaplan_yorke_dim, boxcount_dimension, poincare_sos
 
 jax.config.update("jax_enable_x64", True)
 

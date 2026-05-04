@@ -66,8 +66,8 @@ Open one of the notebooks in `experiments/` to explore specific models and analy
 Use the core modules in your own scripts or notebooks:
 
 ```python
-from src.flows import samelson_flow, duffing, lorenz_system
-from src.lyapunov import plot_wrapped, boxcount_dimension, mLCE_flow
+from dyna.flows import samelson_flow, duffing, lorenz_system
+from dyna.lyapunov import plot_wrapped, boxcount_dimension, mLCE_flow
 ```
 
 ### Core functions
@@ -93,7 +93,7 @@ from src.lyapunov import plot_wrapped, boxcount_dimension, mLCE_flow
 
 ## Contribution
 
-This repository is designed for research and coursework on complex systems. Contributions may include:
+This repository is designed for research and coursework on dynamical systems. Contributions may include:
 
 - implementing complete Lyapunov spectrum support
 - adding new flows and maps

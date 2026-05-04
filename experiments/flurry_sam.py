@@ -8,8 +8,8 @@ import sys
 from os.path import dirname
 sys.path.insert(1, dirname(dirname(__file__)))
 
-from src.flows import samelson_flow, trajectory_plot, stream_plot
-from src.lyapunov import *
+from dyna.flows import samelson_flow, trajectory_plot, stream_plot
+from dyna.lyapunov import *
 
 jax.config.update("jax_enable_x64", True)
 FIG_PATH = dirname(dirname(__file__)) + "/figs/"

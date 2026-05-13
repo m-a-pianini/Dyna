@@ -74,7 +74,7 @@ def samelson_phi(t, z, params):
 _samelson_phi_poly = sympy.Add()
 # TODO: lambdify
 
-def samelson_flow(t, z, params):
+def samelson_flow(t, z, params={}):
     """
     Calculate flow function for Samelson's model of the Bjerknes jet.
 

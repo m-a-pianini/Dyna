@@ -119,26 +119,28 @@ def map_lyapunov_spectrum(
 ):
     pass
 
-# TODO: change from explicit dt to total (physical) time
-# TODO: change (conseguently) save_at behaviour (save at the N timesteps)
+# TODO: Look for eliminating intermediate arrays/reducing dimensionality
+# This is the best I can do
 @partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "stepsize", "jacobian"))
 def flow_lyapunov_spectrum(
     flow: Callable,
     solver,
     z0,
     t0=0.0,
+    t1=1.0,
     params=None,
-    dt=0.01,
-    interval=1,
+    qr_every=1,
     n_intervals=1000,
     burn_in=100,
     save_at=dfx.SaveAt(t1=True),
     stepsize=dfx.ConstantStepSize(),
-    jacobian=True
+    jacobian=False
 ):
     "Returns the lyapunov exponents extimate by iteration via Benettin algorithm with QR orthogonalization"
 
     z_dim = z0.shape[0]
+    dt = (t1 - t0)/qr_every/n_intervals
+    interval = qr_every*dt
 
     if jacobian:
         jacob = jax.jacfwd(lambda z, t: flow(t, z, params))
@@ -178,7 +180,8 @@ def flow_lyapunov_spectrum(
         )
 
         return sol.ys, sol.ts
-
+    
+    @partial(jax.jit, donate_argnums=(0,))
     def step(carry, k):
 
         _state0, t, lyap = carry        
@@ -237,6 +240,8 @@ def flow_lyapunov_spectrum(
     times = jnp.concat(times)
     return traj, lyap_ext, times
 
+# TODO: make this as a jax.lax.cond in the above func
+# Outdated
 @partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "save_at", "stepsize", "jacobian"))
 def fast_flow_lyapunov_spectrum(
     flow: Callable,

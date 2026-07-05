@@ -5,11 +5,13 @@ import jax.numpy as jnp
 import diffrax as dfx
 
 import sys
+from time import time
 from os.path import dirname
 sys.path.insert(1, dirname(dirname(__file__)))
 
 from dyna.flows import samelson_flow, trajectory_plot, stream_plot
 from dyna.lyapunov import *
+from dyna.analysis import *
 
 jax.config.update("jax_enable_x64", True)
 FIG_PATH = dirname(dirname(__file__)) + "/figs_backflow/"
@@ -47,35 +49,43 @@ stream_plot(X, Y, U, V, density=5)
 z0 = jnp.array([-np.pi/2, 0])
 
 # Integration
-Tot_T = 6000
-dt = 0.001
-n_inters = 2e4
-steps = 500
-burns = 0.2
+Tot_T = 3000
+Tot_iters = 1e6
+steps = 100
+n_inters = int(Tot_iters/steps) # Unelegantly, this has to be done outside the main function
 
+burns = 0.2
 term = dfx.ODETerm(rhs)
 
+timesteps = jnp.linspace(0, Tot_T/n_inters, steps-1)
+
 solver = dfx.Kvaerno5()
-stepsc = dfx.PIDController(rtol=1e-8, atol=1e-12)
+stepsc = dfx.PIDController(rtol=1e-10, atol=1e-12, pcoeff=0.4, icoeff=0.3)
 
-timesteps = jnp.linspace(0, steps*dt, 60)
 saveat = dfx.SaveAt(t1=True, ts=timesteps)
-
 
 # Analysis
 boxes = np.logspace(-3, 1, 20)
 
 # Calculate lyapunov spectrum
+now = time()
 traject, cums, times = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars, save_at=timesteps,
-                                   dt=dt, interval=steps*dt, n_intervals=n_inters, stepsize=stepsc, burn_in=int(n_inters*burns))
+                                   t1=Tot_T, qr_every=steps, n_intervals=n_inters, stepsize=stepsc, burn_in=int(n_inters*burns))
+later = time()
 
+print(f"Elapsed time: {later - now:.6f}")
 # Plot of the trajectory (perturbed)
 first = traject.transpose()
-trajectory_plot(first[0], first[1], save=FIG_PATH + "Sam_Path_" + str(pars["h"]) + "_" + str(pars["wf"]) + ".png")
+# trajectory_plot(first[0], first[1], save=FIG_PATH + "Sam_Path_" + str(pars["h"]) + "_" + str(pars["wf"]) + ".png")
+trajectory_plot(first[0], first[1])
 
 print(first.shape)
-tim = times
+print(times[0], times[-1])
 trajectory_plot(times, first[0])
+plt.plot(cums)
+plt.show()
+
+exit()
 
 # Wrapped plot
 ax, first_w = plot_wrapped(first[0], first[1], linewidth=0.65)

@@ -119,6 +119,8 @@ def map_lyapunov_spectrum(
 ):
     pass
 
+# TODO: change from explicit dt to total (physical) time
+# TODO: change (conseguently) save_at behaviour (save at the N timesteps)
 @partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "stepsize", "jacobian"))
 def flow_lyapunov_spectrum(
     flow: Callable,

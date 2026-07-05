@@ -124,16 +124,18 @@ def find_stationary(func: Callable, seq, perc=5, tolerance=0, ):
     squared_norm = jnp.linalg.norm(batch_f(seq), axis=-1)
     # Calculate top p percentile (lowest squared norm)
     threshold = jnp.percentile(a=squared_norm, q=perc, axis=-1,)
-    print(threshold)
     idx = jnp.argwhere(squared_norm <= threshold)
 
     top = jnp.take_along_axis(seq, idx, axis=0) # top scorers
     top_val = squared_norm[idx] # top values
+    print(f"{perc}-percentile ({top.shape[0]}) of squared norms of the function: {threshold:.4f}")
 
     # Then, search for a root near those values
     top.reshape(-1, seq.shape[-1])
     sols = []
     vals = []
+    # Probably not necessary, but
+    # TODO: make this a jax.lax.scan
     for x0 in np.array(top):
         result = root(func, x0)
         sols.append(result.x)
@@ -146,7 +148,8 @@ def find_stationary(func: Callable, seq, perc=5, tolerance=0, ):
 # TODO: bifurcation diagram of a flow/map: 
 
 
-# Fractal dimension extimation 
+# ======= Fractal dimension extimation ========
+# =============================================
 
 def kaplan_yorke_dim(lyaps: jnp.ndarray):
     """

@@ -11,6 +11,15 @@ from diffrax import SaveAt
 # As output the right hand side of the flow equations
 # E.g. hamiltonian flow
 
+# TODO: turn these into a class of objects with useful methods, __call__, ...
+
+class ContTimeDynSys():
+    def __init__(self, rhs, symbols, params: dict):
+        pass
+
+    def __call__(self, *args, **kwds):
+        pass
+
 def hamiltonian_flow(H):
 
     gradH = jax.grad(H)

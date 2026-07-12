@@ -81,6 +81,7 @@ trajectory_plot(first[0], first[1])
 
 print(first.shape)
 print(times[0], times[-1])
+print(cums.shape)
 trajectory_plot(times, first[0])
 plt.plot(cums)
 plt.show()

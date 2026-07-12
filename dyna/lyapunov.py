@@ -1,6 +1,5 @@
 from typing import Callable, Tuple, Iterable
 from functools import partial
-import matplotlib.pyplot as plt
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -417,6 +416,81 @@ def make_batch_fast_lyapunov(flow, solver, dt, n_intervals, stepsize, burn_in, j
 
 if __name__ == '__main__':
     # small demo: standard map (Chirikov standard map)
+    import matplotlib.pyplot as plt
+    from flows import samelson_flow
+    from time import time
+    from datetime import datetime
+
+    # =========== INTEGRATION & OUTPUT TEST ===========
+    pars = {
+        "A0": 0.5,
+        "C": 0.25,
+        "L": 2.0,
+        "h": 0.05,
+        "wf": 0.2133,
+    }
+
+    unp_pars = pars.copy()
+    unp_pars.update({"h": 0})
+
+    rhs = lambda t, z, args: samelson_flow(t, z, args)
+    z0 = jnp.array([-np.pi/2, 0])
+
+    # Integration
+    Tot_T = 3000
+    Tot_iters = 1e6
+    steps = 100
+    n_inters = int(Tot_iters/steps) # Unelegantly, this has to be done outside the main function
+
+    burns = 0.2
+    term = dfx.ODETerm(rhs)
+
+    timesteps = jnp.linspace(0, Tot_T/n_inters, steps-1)
+
+    solver = dfx.Kvaerno5()
+    stepsc = dfx.PIDController(rtol=1e-10, atol=1e-12, pcoeff=0.4, icoeff=0.3)
+
+    saveat = dfx.SaveAt(t1=True, ts=timesteps)
+
+    # Analysis
+    boxes = np.logspace(-3, 1, 20)
+
+    # Calculate lyapunov spectrum
+    now = time()
+    traject, cums, times = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars, save_at=timesteps,
+                                    t1=Tot_T, qr_every=steps, n_intervals=n_inters, stepsize=stepsc, burn_in=int(n_inters*burns))
+    later = time()
+
+    print(f"Elapsed time: {later - now:.6f}")
+    # Plot of the trajectory (perturbed)
+    first = traject.transpose()
+    # trajectory_plot(first[0], first[1], save=FIG_PATH + "Sam_Path_" + str(pars["h"]) + "_" + str(pars["wf"]) + ".png")
+    plt.plot(first[0], first[1])
+    plt.show()
+
+    print(first.shape)
+    print(times[0], times[-1])
+    print(cums.shape)
+    plt.plot(times, first[0])
+    plt.show()
+    plt.plot(cums)
+    plt.show()
+
+    # ================= COPILATION TEST ===================
+
+    compiled = flow_lyapunov_spectrum.lower(flow=rhs, solver=solver, z0=z0, params=pars, save_at=timesteps,
+                                    t1=Tot_T, qr_every=steps, n_intervals=n_inters, stepsize=stepsc, burn_in=int(n_inters*burns))
+    REPORT_PATH = "reports/"
+    with open(REPORT_PATH + "compiled_flow_lyap_spect" + str(datetime.now()) + ".txt", "w") as f:
+        f.write(compiled.as_text())
+        f.write("\n\nCOST ANALYSYS\n\n")
+        f.write(str(compiled.cost_analysis()))
+        # Unsupported by current version
+        #f.write("\n\nMEMORY ANALYSYS\n\n")
+        #f.write(compiled.memory_analysis())
+
+    # =================== DEMO ====================
+    # TODO: move this in another section
     import argparse
     import matplotlib.pyplot as plt
     import itertools as it

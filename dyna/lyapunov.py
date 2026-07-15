@@ -578,11 +578,3 @@ if __name__ == '__main__':
         end = time()
         print(f"Elapsed time: {(end - start):.6f}")
         print('Estimated maximal Lyapunov exponent (flow, approx):', lyap_f)
-"""        print('Second method:')
-        start = time()
-        lyap_f = flow_lyapunov_spectrum(flow=lambda t, z, args: pendulum_flow(t, z), solver=dfx.Dopri5(), z0=z0,
-                                   dt=delta_t, interval=steps*delta_t, n_intervals=N_int)
-        end = time()
-
-        print(f"Elapsed time: {(end - start):.6f}")
-        print('Estimated maximal Lyapunov exponent (flow, approx):', lyap_f)"""

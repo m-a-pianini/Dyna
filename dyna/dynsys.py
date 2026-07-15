@@ -70,7 +70,7 @@ import jax.numpy as jnp
 import graph_tool.all as gt
 
 Domain = Literal["continuous", "discrete", "hybrid"]
-Edge = Tuple[str, str, str, str]  # typically (src_system, src_output_var, dst_system, dst_input_var)
+Edge = Tuple[str, str, str, str]  # (src_system, src_output_var, dst_system, dst_input_var)
 
 
 # --------------------------------------------------------------------------
@@ -101,7 +101,55 @@ def _layout(vars_: Sequence[VarSpec]) -> Tuple[Dict[str, Tuple[int, int]], int]:
         offset += v.size
     return slices, offset
 
+# --------------------------------------------------------------------------
+# Recursive unpacking / time wiring helpers
+# --------------------------------------------------------------------------
 
+def _unpack(sys: DynamicalSystem) -> Tuple[List[DynamicalSystem], List[Edge]]:
+    """A CompositeSystem -> (its immediate children, its edges as tuples).
+    An atomic DynamicalSystem -> ([itself], [])."""
+    if isinstance(sys, CompositeSystem):
+        vprop = sys.graph.vertex_properties["system_name"]
+        eprop = sys.graph.edge_properties["mapping"]
+        edges: List[Edge] = []
+        for e in sys.graph.edges():
+            src_var, dst_var = eprop[e]
+            edges.append((vprop[e.source()], src_var, vprop[e.target()], dst_var))
+        return list(sys.subsystems), edges
+    return [sys], []
+ 
+ 
+def _wire_clock_recursive(sys: DynamicalSystem, target_names: set, input_name: str
+                           ) -> Tuple[DynamicalSystem, List[str], set]:
+    """Returns (possibly-rebuilt system, [dotted input names newly exposed by
+    autonomizing, relative to `sys`], {target names matched inside `sys`}).
+    A matched node -- leaf OR composite -- is autonomized as a whole (via the
+    base, flattening `DynamicalSystem.autonomize(input_name)` -- called
+    explicitly on the base class so a matched *composite* node still gets
+    flattened rather than hitting CompositeSystem's own, differently-shaped
+    `autonomize` override) and NOT recursed into further: overriding its own
+    `t` already redirects every descendant, since a composite forwards one
+    shared `t` to all its children."""
+    if sys.name in target_names:
+        return DynamicalSystem.autonomize(sys, input_name), [input_name], {sys.name}
+    if not isinstance(sys, CompositeSystem):
+        return sys, [], set()
+ 
+    children, edges = _unpack(sys)
+    new_children, bubbled, matched, changed = [], [], set(), False
+    for child in children:
+        new_child, child_bubbled, child_matched = _wire_clock_recursive(child, target_names, input_name)
+        if child_bubbled:
+            changed = True
+            bubbled.extend(f"{child.name}.{e}" for e in child_bubbled)
+        matched |= child_matched
+        new_children.append(new_child)
+ 
+    if not changed:
+        return sys, [], matched
+    return connect(new_children, edges, name=sys.name), bubbled, matched
+
+ 
 # --------------------------------------------------------------------------
 # DynamicalSystem
 # --------------------------------------------------------------------------
@@ -219,6 +267,37 @@ class DynamicalSystem:
         if p is None:
             p = self.default_params
         return self.fn(x, u, p, t)
+
+    # -- time handling ---------------------------------------------------------
+ 
+    def autonomize(self, input_name: str = "t_in") -> "DynamicalSystem":
+        """
+        Expose this system's time dependence as an ordinary, wireable input
+        variable instead of the implicit `t` argument -- without touching
+        the original `fn`'s body. Appends `input_name` as a new (size-1)
+        input; the `t` argument on the returned system's `fn` is ignored
+        (time now arrives through `u`). This is what lets you `connect()` a
+        shared clock (see `make_clock`) into this system's time input.
+        """
+        if input_name in self._input_by_name:
+            raise ValueError(f"'{input_name}' is already an input variable of '{self.name}'")
+ 
+        original_fn = self.fn
+        m = self.input_size  # size of the *original* input vector, before appending time
+ 
+        def fn(x: jnp.ndarray, u_aug: jnp.ndarray, p: Any, t: Any) -> jnp.ndarray:
+            u, t_slot = u_aug[:m], u_aug[m]
+            return original_fn(x, u, p, t_slot)
+ 
+        return DynamicalSystem(
+            name=self.name,
+            state_vars=list(self.state_vars),
+            fn=fn,
+            input_vars=list(self.input_vars) + [VarSpec(input_name)],
+            outputs=list(self.outputs),
+            params=self.default_params,
+            domain=self.domain,
+        )
 
     # -- composition sugar ---------------------------------------------------
 
@@ -428,6 +507,70 @@ class CompositeSystem(DynamicalSystem):
         a = self._state_offset[sys_name]
         return x_global[a:a + s.state_size]
 
+    def autonomize(
+        self,
+        submodules: Optional[Sequence[str]] = None,
+        clock: Optional[DynamicalSystem] = None,
+        clock_output: Optional[str] = None,
+        input_name: str = "t_in",
+        name: Optional[str] = None,
+    ) -> "CompositeSystem":
+        """
+        CompositeSystem-specific override of `DynamicalSystem.autonomize`.
+ 
+        Recursively wires a shared `clock` into the named `submodules`,
+        wherever they live inside this composite -- at any nesting depth.
+        Each matched node is adapted via the base (leaf-level)
+        `DynamicalSystem.autonomize(input_name)`, exactly as you'd do by
+        hand for one system; a matched name that is itself a nested
+        CompositeSystem is adapted as a whole, so the entire subtree beneath
+        it ends up sharing that one substituted time.
+ 
+        Unlike the generic `DynamicalSystem.autonomize` (which flattens
+        everything down into one opaque `fn`), this always goes back through
+        `connect()`, so the result is a genuine `CompositeSystem` -- `.graph`
+        and `.subsystems` stay intact. This replaces the old standalone
+        `connect_clock(...)` function; call it as `composite.autonomize(...)`.
+ 
+        submodules : names of the subsystems to clock, at any nesting depth.
+                     None (default) means every *immediate* child of this
+                     composite.
+        clock      : a DynamicalSystem exposing time as its output, e.g.
+                     built with `make_clock(...)`. Required.
+        """
+        if clock is None:
+            raise ValueError(
+                "CompositeSystem.autonomize(...) requires a `clock` system "
+                "(e.g. built with make_clock(...))"
+            )
+ 
+        top_children, top_edges = _unpack(self)
+        base_name = name or self.name
+ 
+        target_names = set(submodules) if submodules is not None else {c.name for c in top_children}
+ 
+        if clock_output is None:
+            if len(clock.outputs) != 1:
+                raise ValueError(
+                    f"clock '{clock.name}' has {len(clock.outputs)} outputs; "
+                    f"pass clock_output explicitly to disambiguate"
+                )
+            clock_output = clock.outputs[0]
+ 
+        new_top_children, new_edges, matched = [], list(top_edges), set()
+        for child in top_children:
+            new_child, bubbled, child_matched = _wire_clock_recursive(child, target_names, input_name)
+            matched |= child_matched
+            for local_name in bubbled:
+                new_edges.append((clock.name, clock_output, new_child.name, local_name))
+            new_top_children.append(new_child)
+ 
+        missing = target_names - matched
+        if missing:
+            raise ValueError(f"submodule(s) not found (recursively): {sorted(missing)}")
+ 
+        return connect([clock] + new_top_children, new_edges, name=base_name)
+
 
 # --------------------------------------------------------------------------
 # Public composition constructors
@@ -475,3 +618,31 @@ def series(a: DynamicalSystem, b: DynamicalSystem, name: Optional[str] = None) -
             f"input(of '{b.name}') pairs found; use connect(...) explicitly."
         )
     return connect([a, b], edges, name=name or f"{a.name}_then_{b.name}")
+
+
+def make_clock(name: str = "clock", rate: float = 1.0, domain: Domain = "continuous") -> DynamicalSystem:
+    """
+    A trivial autonomous system whose sole state variable *is* time itself:
+        continuous:  d(tau)/dt = rate           (rate=1 recovers ordinary time)
+        discrete:    tau_next  = tau + rate      (rate=1 recovers the step index)
+    Its output is that same state, so -- unlike the special-cased `t` argument
+    on ordinary systems -- it's an ordinary wireable output and can be fanned
+    out via `connect()` to any number of other subsystems that read time
+    through a normal *input* variable instead of through the `t` argument.
+    Useful when several composed subsystems should share one common clock.
+    """
+    is_continuous = domain == "continuous"
+ 
+    def fn(x, u, p, t):
+        if is_continuous:
+            return jnp.ones((1,), dtype=x.dtype) * p["rate"]
+        return x + p["rate"]
+ 
+    return DynamicalSystem(
+        name=name,
+        state_vars=[VarSpec("tau")],
+        outputs=["tau"],
+        params={"rate": rate},
+        domain=domain,
+        fn=fn,
+    ) 

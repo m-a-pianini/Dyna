@@ -58,6 +58,9 @@ If you compose systems of different `domain`s, the resulting composite has
 function -- it does not integrate anything -- so simulating a hybrid system
 (e.g. some subsystems stepped by an ODE solver, others by direct
 substitution) is left to you, using each subsystem's `.domain` to dispatch.
+
+Important note: being callable objects both classes are directly jittable
+and behaves expectedly :)
 """
 
 from __future__ import annotations
@@ -496,9 +499,55 @@ class CompositeSystem(DynamicalSystem):
             u1 = u0 + s.input_size
             xi = x_global[x0:x1]
             ui = eff_u[u0:u1]
-            pi = params[s.name]
-            dxs.append(s.fn(xi, ui, pi, t))
+            pi = params.get(s.name, None) # TODO: could be obscure: will use default parameters for all unspecified subsystems 
+            dxs.append(s(xi, ui, pi, t)) # this uses the __call__ of the subsystem; should it use s.fn instead? I think not
         return jnp.concatenate(dxs) if dxs else jnp.zeros((0,), dtype=x_global.dtype)
+
+    def flatten_params(self, params: Optional[Any] = None, _prefix: str = "") -> Dict[str, Any]:
+        """
+        Collapse the nesting `_composite_fn` needs -- one dict level per
+        composed CompositeSystem -- into a single dict keyed by dotted
+        subsystem path, e.g. {"outer.inner.leaf1": {...}, "outer.leaf3": {...}}.
+        Only the composition-induced nesting is removed; each *leaf*
+        subsystem's own parameter pytree is kept as-is (not flattened
+        further). `params` defaults to `self.default_params`.
+        """
+        if params is None:
+            params = self.default_params
+        flat: Dict[str, Any] = {}
+        for s in self.subsystems:
+            key = f"{_prefix}{s.name}"
+            sub_params = params[s.name]
+            if isinstance(s, CompositeSystem):
+                flat.update(s.flatten_params(sub_params, _prefix=f"{key}."))
+            else:
+                flat[key] = sub_params
+        return flat
+ 
+    def unflatten_params(self, flat: Dict[str, Any], _prefix: str = "",
+                          _missing: Optional[List[str]] = None) -> Any:
+        """Inverse of `flatten_params`: rebuild the nested dict that `self.fn`
+        (i.e. `_composite_fn`) actually expects as its `params` argument.
+        If `flat` is missing any leaf subsystem's key, raises a single
+        KeyError listing *all* of them (not just the first one found)."""
+        top_level = _missing is None
+        if top_level:
+            _missing = []
+ 
+        nested: Dict[str, Any] = {}
+        for s in self.subsystems:
+            key = f"{_prefix}{s.name}"
+            if isinstance(s, CompositeSystem):
+                nested[s.name] = s.unflatten_params(flat, _prefix=f"{key}.", _missing=_missing)
+            elif key in flat:
+                nested[s.name] = flat[key]
+            else:
+                _missing.append(key)
+                nested[s.name] = None  # placeholder; discarded below via the raise
+ 
+        if top_level and _missing:
+            raise KeyError(f"missing flat param key(s): {sorted(_missing)}")
+        return nested
 
     # convenience: pull a named subsystem's own slice back out of the
     # composite's global state/output, e.g. for plotting/inspection.

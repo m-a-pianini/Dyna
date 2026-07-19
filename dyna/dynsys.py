@@ -66,7 +66,7 @@ and behaves expectedly :)
 from __future__ import annotations
 
 import warnings
-from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import jax.numpy as jnp
@@ -152,6 +152,29 @@ def _wire_clock_recursive(sys: DynamicalSystem, target_names: set, input_name: s
         return sys, [], matched
     return connect(new_children, edges, name=sys.name), bubbled, matched
 
+
+def _promote_params_recursive(sys: DynamicalSystem, target_map: Dict[str, Optional[Sequence[str]]],
+                                        state_prefix: str) -> Tuple[DynamicalSystem, set]:
+    """Same recursive-match pattern as `_promote_params_recursive`, but
+    promoting to STATE (trivial dynamics) rather than to input."""
+    if sys.name in target_map:
+        return DynamicalSystem.promote_params(sys, target_map[sys.name], state_prefix), {sys.name}
+    if not isinstance(sys, CompositeSystem):
+        return sys, set()
+ 
+    children, edges = _unpack(sys)
+    new_children, matched, changed = [], set(), False
+    for child in children:
+        new_child, child_matched = _promote_params_recursive(child, target_map, state_prefix)
+        if child_matched:
+            changed = True
+        matched |= child_matched
+        new_children.append(new_child)
+ 
+    if not changed:
+        return sys, matched
+    return connect(new_children, edges, name=sys.name), matched
+
  
 # --------------------------------------------------------------------------
 # DynamicalSystem
@@ -201,6 +224,12 @@ class DynamicalSystem:
                 )
         if domain not in ("continuous", "discrete", "hybrid"):
             raise ValueError("domain must be 'continuous', 'discrete', or 'hybrid'")
+
+        if not isinstance(params, dict):
+            raise TypeError(
+                f"DynamicalSystems requires a dict of params, "
+                f"got {type(params).__name__}"
+            )
 
         self.name = name
         self.state_vars = state_vars
@@ -302,6 +331,99 @@ class DynamicalSystem:
             domain=self.domain,
         )
 
+    # -- parameters shenanigans (Wiggins approved) ---------------------------
+
+    def promote_params(self, param_names: Optional[Sequence[str]] = None,
+                                 state_prefix: str = "") -> "DynamicalSystem":
+        """
+        Turn selected (or, by default, ALL) entries of this system's `params`
+        into ordinary STATE variables with trivial dynamics -- dx/dt = 0
+        (continuous) or x_next = x (discrete) -- instead of fixed parameters.
+        The state-space analogue of `promote_params` (which does the same
+        thing but as a wireable input); useful for treating a parameter as
+        something to integrate/hold/inspect as state -- e.g. gradient-based
+        parameter fitting through a single state vector, or slow parameter
+        drift -- rather than something driven externally.
+ 
+        `self.default_params` must be a flat dict of scalar/array leaves (see
+        `CompositeSystem.promote_params_to_state` for targeting subsystems
+        inside a composite instead). `param_names=None` (default) promotes
+        every key; pass an explicit subset for "some". Each promoted
+        parameter becomes a new state variable named f"{state_prefix}{name}",
+        appended after the existing state (so existing state/output indices
+        are unchanged) and sized to match the parameter's own (static)
+        shape. The returned system's `default_params` no longer contains the
+        promoted keys.
+ 
+        Use `.promoted_initial_state(param_names)` -- called on THIS system,
+        BEFORE promoting -- to get the matching initial-state block (the
+        parameters' own default values, flattened) to append to your own
+        initial condition.
+        """
+        if not isinstance(self.default_params, dict):
+            raise TypeError(
+                f"[{self.name}] promote_params requires a flat dict of params, "
+                f"got {type(self.default_params).__name__}"
+            )
+        names = list(self.default_params) if param_names is None else list(param_names)
+        unknown = set(names) - set(self.default_params)
+        if unknown:
+            raise ValueError(f"[{self.name}] unknown parameter name(s): {sorted(unknown)}")
+        for n in names:
+            if isinstance(self.default_params[n], dict):
+                raise TypeError(
+                    f"[{self.name}] parameter '{n}' is itself a nested params dict "
+                    f"(likely a CompositeSystem's own subsystem params); "
+                    f"promote_params only handles flat scalar/array parameter "
+                    f"leaves -- target that subsystem directly (e.g. via "
+                    f"CompositeSystem.promote_params) instead."
+                )
+        collide = [n for n in names if n in self._state_by_name]
+        if collide:
+            raise ValueError(
+                f"[{self.name}] parameter name(s) already used as state variable(s): {collide}"
+            )
+ 
+        original_fn = self.fn
+        n_orig = self.state_size
+ 
+        shapes = {n: np.asarray(self.default_params[n]).shape for n in names}
+        sizes = {n: int(np.atleast_1d(np.asarray(self.default_params[n])).size) for n in names}
+        new_state_vars = [VarSpec(f"{state_prefix}{n}", sizes[n]) for n in names]
+        total_promoted = sum(sizes.values())
+        is_discrete = self.domain == "discrete"
+ 
+        remaining_params = {k: v for k, v in self.default_params.items() if k not in names}
+ 
+        def fn(x_aug: jnp.ndarray, u: jnp.ndarray, p: Any, t: Any) -> jnp.ndarray:
+            x = x_aug[:n_orig]
+            full_p = dict(p)
+            offset = n_orig
+            promoted_blocks = []
+            for n in names:
+                size = sizes[n]
+                block = x_aug[offset:offset + size]
+                promoted_blocks.append(block)
+                full_p[n] = block.reshape(shapes[n])
+                offset += size
+            dx = original_fn(x, u, full_p, t)
+            if is_discrete:
+                trivial = (jnp.concatenate(promoted_blocks) if promoted_blocks
+                           else jnp.zeros((0,), dtype=x_aug.dtype))
+            else:
+                trivial = jnp.zeros((total_promoted,), dtype=x_aug.dtype)
+            return jnp.concatenate([dx, trivial])
+ 
+        return DynamicalSystem(
+            name=self.name,
+            state_vars=list(self.state_vars) + new_state_vars,
+            fn=fn,
+            input_vars=self.input_vars,
+            outputs=list(self.outputs),
+            params=remaining_params,
+            domain=self.domain,
+        )
+    
     # -- composition sugar ---------------------------------------------------
 
     def __or__(self, other: "DynamicalSystem") -> "CompositeSystem":
@@ -365,7 +487,12 @@ class CompositeSystem(DynamicalSystem):
     merged/connected into a larger composite (arbitrary nesting).
 
     You normally build these via `merge(...)` or `connect(...)` below rather
-    than calling this constructor directly.
+    than calling this constructor directly, but you can do so by having a properly
+    built graph with:
+    -- "system_name" vertex_property containing the names of the vertices (no need to 
+    recursively add the subsystem names).
+    -- "mapping" edge_property containing the pair (in_variable, out_variable) of
+    each connection between the systems.
     """
 
     def __init__(self, name: str, subsystems: Sequence[DynamicalSystem], graph: "gt.Graph"):
@@ -619,6 +746,56 @@ class CompositeSystem(DynamicalSystem):
             raise ValueError(f"submodule(s) not found (recursively): {sorted(missing)}")
  
         return connect([clock] + new_top_children, new_edges, name=base_name)
+
+    def promote_params(
+        self,
+        targets: Union[Sequence[str], Dict[str, Optional[Sequence[str]]]],
+        state_prefix: str = "",
+        name: Optional[str] = None,
+    ) -> "CompositeSystem":
+        """
+        CompositeSystem-specific override of
+        `DynamicalSystem.promote_params`: recursively promote
+        parameters of NAMED subsystems -- at any nesting depth -- into
+        ordinary state variables with trivial dynamics (dx/dt = 0, or
+        x_next = x for discrete subsystems), while still returning a genuine
+        CompositeSystem (`.graph`/`.subsystems` preserved, since this goes
+        back through `connect()` at the end).
+ 
+        targets : either
+          - a plain sequence of subsystem names -> promote ALL of each named
+            subsystem's own parameters, or
+          - a dict {subsystem_name: param_names_or_None} -> promote just the
+            given parameter names for that subsystem (None means "all",
+            same as the base method's default).
+ 
+        Each matched subsystem is adapted via the base, leaf-level
+        `DynamicalSystem.promote_params(...)` (called explicitly on
+        the base class, bypassing this override -- same reasoning as the
+        sibling `promote_params`/`autonomize` overrides). The newly-promoted
+        state is appended after each subsystem's existing state, so existing
+        state/output indices elsewhere are unaffected; get matching initial
+        values via `.promoted_initial_state(...)` on the ORIGINAL subsystem.
+        """
+        target_map: Dict[str, Optional[Sequence[str]]] = (
+            dict(targets) if isinstance(targets, dict) else {t: None for t in targets}
+        )
+ 
+        top_children, top_edges = _unpack(self)
+        base_name = name or self.name
+ 
+        new_top_children: List[DynamicalSystem] = []
+        matched: set = set()
+        for child in top_children:
+            new_child, child_matched = _promote_params_recursive(child, target_map, state_prefix)
+            matched |= child_matched
+            new_top_children.append(new_child)
+ 
+        missing = set(target_map) - matched
+        if missing:
+            raise ValueError(f"subsystem(s) not found (recursively): {sorted(missing)}")
+ 
+        return connect(new_top_children, top_edges, name=base_name)
 
 
 # --------------------------------------------------------------------------

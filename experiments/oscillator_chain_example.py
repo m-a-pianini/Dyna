@@ -38,5 +38,5 @@ dx = chain(x0, jnp.zeros((chain.input_size,)), chain.default_params, t=0)
 print(dx)
 
 osc_jittedfn = jax.jit(chain)
-dih = {"osc0": {"drive_amp": 0,}}
+dih = {"osc0": {"drive_amp": 0,}} # This get modified, while the other subs keep using their default parameters
 print(osc_jittedfn(x=x0, p=dih, t=0.5))

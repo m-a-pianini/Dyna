@@ -1,8 +1,6 @@
 **/__pycache__/
 **/.vscode/
-figs/
-figs_interpars/
-figs_backflow/
 *.png
 *.pyc
+figs/
 reports/

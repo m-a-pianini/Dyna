@@ -13,13 +13,6 @@ from diffrax import SaveAt
 
 # TODO: turn these into a class of objects with useful methods, __call__, ...
 
-class ContTimeDynSys():
-    def __init__(self, rhs, symbols, params: dict):
-        pass
-
-    def __call__(self, *args, **kwds):
-        pass
-
 def hamiltonian_flow(H):
 
     gradH = jax.grad(H)
@@ -76,12 +69,6 @@ def lorenz_system(t, z, params):
     dz = X*Y - beta*Z
 
     return jnp.array([dx, dy, dz])
-
-def samelson_phi(t, z, params):
-    pass
-# TODO: this has to be a symbolic formula to be differentiated and called with subs in the function below
-_samelson_phi_poly = sympy.Add()
-# TODO: lambdify
 
 def samelson_flow(t, z, params={}):
     """

@@ -8,10 +8,11 @@ jax.config.update("jax_enable_x64", True)
 
 
 #u are cute <3
-# Algorithms for calculating lyapunov exponent(s)
+# Benettin algorithm implementations for calculating lyapunov exponent(s)
 
 # ========= Maximum Lyapunov exponent =========
 # =============================================
+
 
 def mLCE_map(map_func: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, N: int, delta0: float = 1e-8) -> np.float64:
     """Estimate maximal Lyapunov exponent for a discrete map using Benettin's algorithm (Benettin et al. 1980).
@@ -85,7 +86,7 @@ def mLCE_flow(f: Callable[[float, np.ndarray], np.ndarray], y0: np.ndarray, t: n
     # The result is a sum of the logs of all these expansions
     return s / (t[-1] - t[0])
 
-# TODO: implement this
+# TODO: implement these
 @partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "save_at", "stepsize"))
 def flow_mLCE(
     flow: Callable,
@@ -102,11 +103,25 @@ def flow_mLCE(
 ):
     pass
 
+def map_mLCE(
+    map: Callable,
+    z0,
+    t0=0.0,
+    params=None,
+    interval=1,
+    n_intervals=1000,
+    burn_in=100,
+    jacobian=True
+):
+    pass
+
+
 # =============== Full spectrum ===============
 # =============================================
 
+
 # TODO: implement this
-def map_lyapunov_spectrum(
+def map_spectrum(
     map: Callable,
     z0,
     t0=0.0,
@@ -121,7 +136,7 @@ def map_lyapunov_spectrum(
 # TODO: Look for eliminating intermediate arrays/reducing dimensionality
 # This is the best I can do
 @partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "stepsize", "jacobian"))
-def flow_lyapunov_spectrum(
+def flow_spectrum(
     flow: Callable,
     solver,
     z0,
@@ -239,10 +254,52 @@ def flow_lyapunov_spectrum(
     times = jnp.concat(times)
     return traj, lyap_ext, times
 
-# TODO: make this as a jax.lax.cond in the above func
-# Outdated
+# Many-trajectories/parameters variation (vmappable) lyapunov exponent calculation
+def batch_flow_spectrum(flow, solver, dt, n_intervals, stepsize, burn_in, jacobian=True, save_at=dfx.SaveAt(t1=True)):
+    """
+    # Example usage:
+    compute = make_batch_lyapunov_solver(flow=rhs, solver=solver, dt=dt, stepsize=stepsc, n_intervals=N_iters, burn_in=50, jacobian=False)
+    batched_lyap = jax.jit(
+        jax.vmap(compute, in_axes=(0, 0, None, None))
+    )
+
+    cum_lyaps = batched_lyap(jnp.array([[0., 0], [1, 1]]), t0_batch, pars, steps*dt)
+
+    # Alternative for memory filling
+    results = []
+    z0_all = jnp.array([[0., 0], [1, 1]])
+    for i in range(0, len(z0_all), batch_size):
+        z_chunk = z0_all[i:i+batch_size]
+        lam = batched_lyap(z_chunk, t0_batch, pars, steps*dt)
+        results.append(lam)
+
+    cum_lyaps = jnp.concatenate(results, axis=0)"""
+    @partial(jax.jit, static_argnames=())
+    def compute(z0, t0, params, interval):
+
+        return flow_spectrum(
+            flow=flow,
+            solver=solver,
+            z0=z0,
+            t0=t0,
+            params=params,
+            dt=dt,
+            interval=interval,
+            n_intervals=n_intervals,
+            burn_in=burn_in,
+            save_at=save_at,
+            stepsize=stepsize,
+            jacobian=jacobian,
+        )
+
+    return compute
+
+
+# Deprecatable
+# =============================================
+
 @partial(jax.jit, static_argnames=("flow", "solver", "n_intervals", "burn_in", "save_at", "stepsize", "jacobian"))
-def fast_flow_lyapunov_spectrum(
+def fast_flow_spectrum(
     flow: Callable,
     solver,
     z0,
@@ -335,8 +392,7 @@ def fast_flow_lyapunov_spectrum(
     total_time = interval * remaining
     return lyap/total_time
 
-# Efficient many-trajectories (vmappable) lyapunov exponent calculation
-def make_batch_lyapunov_solver(flow, solver, dt, n_intervals, stepsize, burn_in, jacobian=True, save_at=dfx.SaveAt(t1=True)):
+def batch_fast_flow_spectrum(flow, solver, dt, n_intervals, stepsize, burn_in, jacobian=True):
     """
     # Example usage:
     compute = make_batch_lyapunov_solver(flow=rhs, solver=solver, dt=dt, stepsize=stepsc, n_intervals=N_iters, burn_in=50, jacobian=False)
@@ -358,46 +414,7 @@ def make_batch_lyapunov_solver(flow, solver, dt, n_intervals, stepsize, burn_in,
     @partial(jax.jit, static_argnames=())
     def compute(z0, t0, params, interval):
 
-        return flow_lyapunov_spectrum(
-            flow=flow,
-            solver=solver,
-            z0=z0,
-            t0=t0,
-            params=params,
-            dt=dt,
-            interval=interval,
-            n_intervals=n_intervals,
-            burn_in=burn_in,
-            save_at=save_at,
-            stepsize=stepsize,
-            jacobian=jacobian,
-        )
-
-    return compute
-
-def make_batch_fast_lyapunov(flow, solver, dt, n_intervals, stepsize, burn_in, jacobian=True):
-    """
-    # Example usage:
-    compute = make_batch_lyapunov_solver(flow=rhs, solver=solver, dt=dt, stepsize=stepsc, n_intervals=N_iters, burn_in=50, jacobian=False)
-    batched_lyap = jax.jit(
-        jax.vmap(compute, in_axes=(0, 0, None, None))
-    )
-
-    cum_lyaps = batched_lyap(jnp.array([[0., 0], [1, 1]]), t0_batch, pars, steps*dt)
-
-    # Alternative for memory filling
-    results = []
-    z0_all = jnp.array([[0., 0], [1, 1]])
-    for i in range(0, len(z0_all), batch_size):
-        z_chunk = z0_all[i:i+batch_size]
-        lam = batched_lyap(z_chunk, t0_batch, pars, steps*dt)
-        results.append(lam)
-
-    cum_lyaps = jnp.concatenate(results, axis=0)"""
-    @partial(jax.jit, static_argnames=())
-    def compute(z0, t0, params, interval):
-
-        return fast_flow_lyapunov_spectrum(
+        return fast_flow_spectrum(
             flow=flow,
             solver=solver,
             z0=z0,
@@ -415,9 +432,8 @@ def make_batch_fast_lyapunov(flow, solver, dt, n_intervals, stepsize, burn_in, j
 
 
 if __name__ == '__main__':
-    # small demo: standard map (Chirikov standard map)
     import matplotlib.pyplot as plt
-    from flows import samelson_flow
+    from dyna.flows import samelson_flow
     from time import time
     from datetime import datetime
 
@@ -457,14 +473,13 @@ if __name__ == '__main__':
 
     # Calculate lyapunov spectrum
     now = time()
-    traject, cums, times = flow_lyapunov_spectrum(flow=rhs, solver=solver, z0=z0, params=pars, save_at=timesteps,
+    traject, cums, times = flow_spectrum(flow=rhs, solver=solver, z0=z0, params=pars, save_at=timesteps,
                                     t1=Tot_T, qr_every=steps, n_intervals=n_inters, stepsize=stepsc, burn_in=int(n_inters*burns))
     later = time()
 
     print(f"Elapsed time: {later - now:.6f}")
     # Plot of the trajectory (perturbed)
     first = traject.transpose()
-    # trajectory_plot(first[0], first[1], save=FIG_PATH + "Sam_Path_" + str(pars["h"]) + "_" + str(pars["wf"]) + ".png")
     plt.plot(first[0], first[1])
     plt.show()
 
@@ -478,9 +493,11 @@ if __name__ == '__main__':
 
     # ================= COPILATION TEST ===================
 
-    compiled = flow_lyapunov_spectrum.lower(flow=rhs, solver=solver, z0=z0, params=pars, save_at=timesteps,
-                                    t1=Tot_T, qr_every=steps, n_intervals=n_inters, stepsize=stepsc, burn_in=int(n_inters*burns))
     REPORT_PATH = "reports/"
+
+    compiled = flow_spectrum.lower(flow=rhs, solver=solver, z0=z0, params=pars, save_at=timesteps,
+                                    t1=Tot_T, qr_every=steps, n_intervals=n_inters, stepsize=stepsc, burn_in=int(n_inters*burns))
+    
     with open(REPORT_PATH + "compiled_flow_lyap_spect" + str(datetime.now()) + ".txt", "w") as f:
         f.write(compiled.as_text())
         f.write("\n\nCOST ANALYSYS\n\n")
@@ -488,93 +505,3 @@ if __name__ == '__main__':
         # Unsupported by current version
         #f.write("\n\nMEMORY ANALYSYS\n\n")
         #f.write(compiled.memory_analysis())
-
-    # =================== DEMO ====================
-    # TODO: move this in another section
-    import argparse
-    import matplotlib.pyplot as plt
-    import itertools as it
-    from scipy.integrate import solve_ivp
-    from maps import iterate_map, standard_map
-    from time import time
-
-    # Parser nonsense
-    parser = argparse.ArgumentParser(description='Integrator demo: maps and Hamiltonians')
-    parser.add_argument('--demo', choices=['standard_map', 'pendulum'], default='none')
-    parser.add_argument('--iters', type=int, default=2000)
-    parser.add_argument('--k', type=float, default=0.971635)
-    args = parser.parse_args()
-
-    if args.demo == 'standard_map':
-        k = args.k*0
-        dynamic = lambda x: standard_map(x, k)
-    
-        init_theta = np.concat([np.linspace(1.2, 1.7, 10), np.linspace(0, 6, 5)])
-        init_p = np.concat([np.linspace(2.5, 3, 10), np.linspace(0, 6, 5)])
-        init_values = np.array(list(it.product(init_theta, init_p)))
-        #init_values = np.array([np.array([np.pi]*100), np.linspace(0, 2*np.pi, 100)]).transpose()
-
-        lyaps = []
-        plt.figure(figsize=(6, 5))
-
-        for i, init in enumerate(init_values):
-            #init = np.array([0, init_values[i]])
-            traj = iterate_map(dynamic, init, args.iters)
-            sim = iterate_map(dynamic, np.array([2*np.pi, 2*np.pi]) - init, args.iters)
-            plt.scatter(traj[::1, 0], traj[::1, 1], s=0.5)
-            plt.scatter(sim[::1, 0], sim[::1, 1], s=0.5)
-            lyaps.append(mLCE_map(dynamic, init, 2000))
-            print(f'Estimated mLCE (map) for initial condition {init}: {lyaps[i]:.10f}')
-
-        plt.xlabel('theta')
-        plt.ylabel('p')
-        plt.title(f'Standard map k={k} ({args.iters} iter)')
-        plt.tight_layout()
-        plt.show()
-
-
-    elif args.demo == 'pendulum':
-        # Simple pendulum with H = p^2/2 - cos(theta)
-        def pendulum_flow(t: jnp.ndarray, z: jnp.ndarray, m=1, g=9.81, L=1) -> jnp.ndarray:
-            theta, p = z
-
-            return jnp.array([p, -(m*g/L)*jnp.sin(theta)])
-
-        z0 = jnp.array([1.0, 0.0])
-
-        t_bounds = [0, 30]
-        delta_t = 1e-4
-
-        solver = dfx.Dopri5()
-        term = dfx.ODETerm(lambda t, z, args: pendulum_flow(t, z))
-
-        saveat = dfx.SaveAt(ts=jnp.linspace(t_bounds[0], t_bounds[1], 10000))
-
-        sol = dfx.diffeqsolve(
-            term,
-            solver,
-            t0=t_bounds[0],
-            t1=t_bounds[1],
-            dt0=delta_t,
-            y0=z0,
-            saveat=saveat,
-            args=None,
-            max_steps=1200000
-    )
-
-        qs, ps = sol.ys.transpose()
-        plt.figure()
-        plt.plot(qs[:] % (2 * jnp.pi) - jnp.pi, ps[:], linewidth=0.5)
-        plt.xlabel('theta')
-        plt.ylabel('p')
-        plt.title('Pendulum phase portrait')
-        plt.show()
-
-        steps = 0.03
-        N_int = 500000
-        start = time()
-        lyap_f = flow_lyapunov_spectrum(flow=lambda t, z, args: pendulum_flow(t, z), solver=dfx.Dopri5(), z0=z0,
-                                   dt=delta_t, interval=steps*delta_t, n_intervals=N_int)
-        end = time()
-        print(f"Elapsed time: {(end - start):.6f}")
-        print('Estimated maximal Lyapunov exponent (flow, approx):', lyap_f)

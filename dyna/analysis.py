@@ -8,7 +8,8 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 
 
-# Visualisation & manipulation utils
+# ======= Visualisation & manipulation ========
+# =============================================
 
 def poincare_sos(data: np.ndarray | None = None, section_val: float = 0, tol: float = 1e-6,
                      wrap_period: float | None = None, center: float = 0) -> np.ndarray:

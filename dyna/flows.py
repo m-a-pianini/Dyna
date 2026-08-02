@@ -132,29 +132,9 @@ def duffing(t, z, params):
     return jnp.array([dx, dy])
 
 # Visualization utils
-def trajectory_plot(x, y, save=None):
-    plt.figure(figsize=(8,4))
-    plt.plot(x, y)
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.title("Simple plot")
-    plt.grid(True)
-    if save is not None:
-        plt.savefig(save)
-    plt.show()
-
-def stream_plot(X, Y, U , V, density = 2):
-    plt.figure(figsize=(8,4))
-    plt.streamplot(x=X, y=Y, u=U, v=V, density=density)
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.title("Particle trajectory in the Bickley jet")
-    plt.grid(True)
-    plt.show()
-
 
 if __name__ == "__main__":
-
+    from analysis import phase_portrait_2d
     # Test plot to see if the map is correct
     # it is :,)
     samelsons_pars = {
@@ -174,7 +154,7 @@ if __name__ == "__main__":
 
     X, Y = np.meshgrid(np.linspace(-5, 5, 850), np.linspace(-5, 5, 850))
     U, V = samelson_flow(t=0, z=(X, Y), params=samelsons_pars)
-    stream_plot(X, Y, U, V, density=3)
+    phase_portrait_2d(X, Y, U, V, density=3)
 
     # Test for the solution finding and display
     # It works

@@ -120,8 +120,8 @@ def _unpack(sys: DynamicalSystem) -> Tuple[List[DynamicalSystem], List[Edge]]:
             edges.append((vprop[e.source()], src_var, vprop[e.target()], dst_var))
         return list(sys.subsystems), edges
     return [sys], []
- 
- 
+
+
 def _wire_clock_recursive(sys: DynamicalSystem, target_names: set, input_name: str
                            ) -> Tuple[DynamicalSystem, List[str], set]:
     """Returns (possibly-rebuilt system, [dotted input names newly exposed by
@@ -137,7 +137,7 @@ def _wire_clock_recursive(sys: DynamicalSystem, target_names: set, input_name: s
         return DynamicalSystem.autonomize(sys, input_name), [input_name], {sys.name}
     if not isinstance(sys, CompositeSystem):
         return sys, [], set()
- 
+
     children, edges = _unpack(sys)
     new_children, bubbled, matched, changed = [], [], set(), False
     for child in children:
@@ -147,7 +147,7 @@ def _wire_clock_recursive(sys: DynamicalSystem, target_names: set, input_name: s
             bubbled.extend(f"{child.name}.{e}" for e in child_bubbled)
         matched |= child_matched
         new_children.append(new_child)
- 
+
     if not changed:
         return sys, [], matched
     return connect(new_children, edges, name=sys.name), bubbled, matched
@@ -175,7 +175,7 @@ def _promote_params_recursive(sys: DynamicalSystem, target_map: Dict[str, Option
         return sys, matched
     return connect(new_children, edges, name=sys.name), matched
 
- 
+
 # --------------------------------------------------------------------------
 # DynamicalSystem
 # --------------------------------------------------------------------------
@@ -650,7 +650,7 @@ class CompositeSystem(DynamicalSystem):
             else:
                 flat[key] = sub_params
         return flat
- 
+
     def unflatten_params(self, flat: Dict[str, Any], _prefix: str = "",
                           _missing: Optional[List[str]] = None) -> Any:
         """Inverse of `flatten_params`: rebuild the nested dict that `self.fn`

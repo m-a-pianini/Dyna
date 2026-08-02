@@ -11,6 +11,26 @@ jax.config.update("jax_enable_x64", True)
 # ======= Visualisation & manipulation ========
 # =============================================
 
+def trajectory_plot(x, y, save=None):
+    plt.figure(figsize=(8,4))
+    plt.plot(x, y)
+    plt.xlabel("x")
+    plt.ylabel("y")
+    plt.title("Simple plot")
+    plt.grid(True)
+    if save is not None:
+        plt.savefig(save)
+    plt.show()
+
+def phase_portrait_2d(X, Y, U , V, density = 2):
+    plt.figure(figsize=(8,4))
+    plt.streamplot(x=X, y=Y, u=U, v=V, density=density)
+    plt.xlabel("x")
+    plt.ylabel("y")
+    plt.title("Particle trajectory in the Bickley jet")
+    plt.grid(True)
+    plt.show()
+
 def poincare_sos(data: np.ndarray | None = None, section_val: float = 0, tol: float = 1e-6,
                      wrap_period: float | None = None, center: float = 0) -> np.ndarray:
     """Extract points near a Poincaré section defined by a coordinate index (zero crossing not implemented).

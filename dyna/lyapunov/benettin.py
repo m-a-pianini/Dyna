@@ -7,6 +7,11 @@ import diffrax as dfx
 jax.config.update("jax_enable_x64", True)
 
 
+__all__ = [
+    "flow_spectrum",
+    "batch_flow_spectrum",
+]
+
 #u are cute <3
 # Benettin algorithm implementations for calculating lyapunov exponent(s)
 
@@ -498,7 +503,7 @@ if __name__ == '__main__':
     compiled = flow_spectrum.lower(flow=rhs, solver=solver, z0=z0, params=pars, save_at=timesteps,
                                     t1=Tot_T, qr_every=steps, n_intervals=n_inters, stepsize=stepsc, burn_in=int(n_inters*burns))
     
-    with open(REPORT_PATH + "compiled_flow_lyap_spect" + str(datetime.now()) + ".txt", "w") as f:
+    with open(REPORT_PATH + "compiled_flow_spectrum_" + str(datetime.now()) + ".txt", "w") as f:
         f.write(compiled.as_text())
         f.write("\n\nCOST ANALYSYS\n\n")
         f.write(str(compiled.cost_analysis()))

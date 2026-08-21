@@ -299,6 +299,23 @@ def batch_flow_spectrum(flow, solver, dt, n_intervals, stepsize, burn_in, jacobi
 
     return compute
 
+# TODO: implement
+def jumping_spectrum(
+    flow: Callable,
+    solver,
+    z0,
+    t0=0.0,
+    t1=1.0,
+    params=None,
+    qr_every=1,
+    n_intervals=1000,
+    burn_in=100,
+    save_at=dfx.SaveAt(t1=True),
+    stepsize=dfx.ConstantStepSize(),
+    jacobian=False
+):
+    pass
+
 
 # Deprecatable
 # =============================================
@@ -434,6 +451,11 @@ def batch_fast_flow_spectrum(flow, solver, dt, n_intervals, stepsize, burn_in, j
         )
 
     return compute
+
+# Musing and doubts:
+# 1. is flow_spectrum recompiling his step function every vmap iteraton?
+# 2. is it faster/possible to integrate separately the trajectory and the tangent dynamic?
+# 3. 
 
 
 if __name__ == '__main__':

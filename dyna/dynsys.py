@@ -442,7 +442,8 @@ class DynamicalSystem:
 # Graph construction
 # --------------------------------------------------------------------------
 
-def build_graph(subsystems: Sequence[DynamicalSystem], edges: Sequence[Edge]) -> "gt.Graph":
+def build_graph(subsystems: Sequence[DynamicalSystem] | Sequence[str],
+                edges: Sequence[Edge]) -> "gt.Graph":
     """
     Build a graph-tool directed graph: one vertex per subsystem, one edge per
     wired connection. `edges` is a list of
@@ -454,13 +455,15 @@ def build_graph(subsystems: Sequence[DynamicalSystem], edges: Sequence[Edge]) ->
     name_prop = g.new_vertex_property("object")
     vertex_of = {}
     names_seen = set()
-    for s in subsystems:
-        if s.name in names_seen:
-            raise ValueError(f"duplicate subsystem name '{s.name}'")
-        names_seen.add(s.name)
+
+    subs_name = [s.name for s in subsystems] if isinstance(subsystems[0], DynamicalSystem) else subsystems
+    for name in subs_name:
+        if name in names_seen:
+            raise ValueError(f"duplicate subsystem name '{name}'")
+        names_seen.add(name)
         v = g.add_vertex()
-        name_prop[v] = s.name
-        vertex_of[s.name] = v
+        name_prop[v] = name
+        vertex_of[name] = v
     g.vertex_properties["system_name"] = name_prop
 
     mapping_prop = g.new_edge_property("object")

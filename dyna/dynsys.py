@@ -300,6 +300,49 @@ class DynamicalSystem:
             p = self.default_params
         return self.fn(x, u, p, t)
 
+    # -- hybrid (continuous/discrete) integration support ---------------------
+    #
+    # `domain` alone tells you WHAT a system's dynamics mean (a derivative or
+    # a next-state), but not how to integrate a composite that mixes both.
+    # `.flow`/`.step` answer that uniformly for ANY DynamicalSystem (leaf or
+    # composite, homogeneous or hybrid): `.flow` is always a valid vector
+    # field (zero on discrete parts) you can hand an ODE solver; `.step` is
+    # always a valid discrete update (identity on continuous parts) you can
+    # iterate in a plain loop. CompositeSystem overrides these to recurse
+    # per-subsystem (see below); here is the leaf case they bottom out on.
+
+    def flow(self, x: jnp.ndarray, u: Optional[jnp.ndarray] = None,
+             p: Any = None, t: Any = 0.0) -> jnp.ndarray:
+        """dx/dt if `domain == 'continuous'`; an all-zero derivative (held
+        fixed under an ODE solve) if `domain == 'discrete'`."""
+        if self.domain == "continuous":
+            return self(x, u, p, t)
+        if self.domain == "discrete":
+            return jnp.zeros_like(x)
+        raise ValueError(f"[{self.name}] domain 'hybrid' on a non-composite system")
+
+    def step(self, x: jnp.ndarray, u: Optional[jnp.ndarray] = None,
+             p: Any = None, t: Any = 0.0) -> jnp.ndarray:
+        """x_next if `domain == 'discrete'`; identity (unchanged, held fixed
+        for the duration of one discrete tick) if `domain == 'continuous'`."""
+        if self.domain == "discrete":
+            return self(x, u, p, t)
+        if self.domain == "continuous":
+            return x
+        raise ValueError(f"[{self.name}] domain 'hybrid' on a non-composite system")
+
+    @property
+    def continuous_mask(self) -> jnp.ndarray:
+        """Boolean array over this system's own state vector: all-True if
+        continuous, all-False if discrete. `CompositeSystem` overrides this
+        to concatenate its subsystems' own masks recursively."""
+        return jnp.full((self.state_size,), self.domain == "continuous", dtype=bool)
+
+    @property
+    def discrete_mask(self) -> jnp.ndarray:
+        """The complement of `continuous_mask` -- see there."""
+        return ~self.continuous_mask
+
     # -- time handling ---------------------------------------------------------
  
     def autonomize(self, input_name: str = "t_in") -> "DynamicalSystem":
@@ -612,26 +655,92 @@ class CompositeSystem(DynamicalSystem):
             fn=self._composite_fn,
         )
 
-    def _composite_fn(self, x_global: jnp.ndarray, u_free: jnp.ndarray,
-                       params: Dict[str, Any], t: Any) -> jnp.ndarray:
-        # Set variables to 0 and to u_free
+    def _effective_inputs(self, x_global: jnp.ndarray, u_free: jnp.ndarray) -> jnp.ndarray:
+        """The full (length-M) per-subsystem input vector, after wiring: free
+        slots filled from `u_free`, wired slots gathered from `x_global`."""
         u_ext_full = jnp.zeros((self._M,), dtype=x_global.dtype).at[self._free_slot_indices].set(u_free)
         augmented = jnp.concatenate([x_global, u_ext_full])
-        eff_u = augmented[self._G]
+        return augmented[self._G]
 
+    def _slice_for(self, s: DynamicalSystem, x_global: jnp.ndarray, eff_u: jnp.ndarray,
+                    params: Dict[str, Any]) -> Tuple[jnp.ndarray, jnp.ndarray, Any]:
+        """(xi, ui, pi) for one immediate subsystem `s`, sliced out of the
+        composite's global state/effective-input/params."""
+        x0 = self._state_offset[s.name]
+        x1 = x0 + s.state_size
+        u0 = self._input_offset[s.name]
+        u1 = u0 + s.input_size
+        pi = params.get(s.name, None)  # TODO: could be obscure: will use default parameters for all unspecified subsystems
+        return x_global[x0:x1], eff_u[u0:u1], pi
+
+    def _composite_fn(self, x_global: jnp.ndarray, u_free: jnp.ndarray,
+                       params: Dict[str, Any], t: Any) -> jnp.ndarray:
+        eff_u = self._effective_inputs(x_global, u_free)
         dxs = []
-        # This is the meat: 
+        # This is the meat:
         # The indexes, both of the state and of the inputs, are necessary to properly pass the variables to the single subsystems
         for s in self.subsystems:
-            x0 = self._state_offset[s.name]
-            x1 = x0 + s.state_size
-            u0 = self._input_offset[s.name]
-            u1 = u0 + s.input_size
-            xi = x_global[x0:x1]
-            ui = eff_u[u0:u1]
-            pi = params.get(s.name, None) # TODO: could be obscure: will use default parameters for all unspecified subsystems 
+            xi, ui, pi = self._slice_for(s, x_global, eff_u, params)
             dxs.append(s(xi, ui, pi, t)) # this uses the __call__ of the subsystem; should it use s.fn instead? I think not
         return jnp.concatenate(dxs) if dxs else jnp.zeros((0,), dtype=x_global.dtype)
+
+    def flow(self, x_global: jnp.ndarray, u_free: Optional[jnp.ndarray] = None,
+             params: Optional[Dict[str, Any]] = None, t: Any = 0.0) -> jnp.ndarray:
+        """
+        The continuous-time vector field dx/dt of this (possibly hybrid)
+        composite: recurses into each subsystem's OWN `.flow` -- a leaf
+        contributes its real derivative if `domain == "continuous"`, or an
+        all-zero derivative (held fixed) if `domain == "discrete"`; a nested
+        CompositeSystem contributes whatever mix its own `.flow` computes.
+        Hand this straight to an ODE solver, e.g.
+            diffrax.ODETerm(lambda t, y, args: composite.flow(y, u, args, t))
+        """
+        if u_free is None:
+            u_free = jnp.zeros((self.input_size,))
+        if params is None:
+            params = self.default_params
+        eff_u = self._effective_inputs(x_global, u_free)
+        parts = []
+        for s in self.subsystems:
+            xi, ui, pi = self._slice_for(s, x_global, eff_u, params)
+            parts.append(s.flow(xi, ui, pi, t))
+        return jnp.concatenate(parts) if parts else jnp.zeros((0,), dtype=x_global.dtype)
+
+    def step(self, x_global: jnp.ndarray, u_free: Optional[jnp.ndarray] = None,
+             params: Optional[Dict[str, Any]] = None, t: Any = 0.0) -> jnp.ndarray:
+        """
+        The discrete update x_next of this (possibly hybrid) composite:
+        recurses into each subsystem's OWN `.step` -- a leaf contributes its
+        real x_next if `domain == "discrete"`, or is passed through
+        unchanged (identity) if `domain == "continuous"`; a nested
+        CompositeSystem contributes whatever mix its own `.step` computes.
+        Hand this straight to a plain iteration loop, e.g.
+            x = composite.step(x, u, params, t)   # once per discrete tick
+        """
+        if u_free is None:
+            u_free = jnp.zeros((self.input_size,))
+        if params is None:
+            params = self.default_params
+        eff_u = self._effective_inputs(x_global, u_free)
+        parts = []
+        for s in self.subsystems:
+            xi, ui, pi = self._slice_for(s, x_global, eff_u, params)
+            parts.append(s.step(xi, ui, pi, t))
+        return jnp.concatenate(parts) if parts else jnp.zeros((0,), dtype=x_global.dtype)
+
+    @property
+    def continuous_mask(self) -> jnp.ndarray:
+        """Boolean array over the GLOBAL state vector: True where that slot
+        belongs to a (recursively) continuous subsystem. Recurses into
+        nested CompositeSystems via their own `continuous_mask`; a leaf
+        contributes all-True (continuous) or all-False (discrete)."""
+        return jnp.concatenate([s.continuous_mask for s in self.subsystems]) if self.subsystems \
+            else jnp.zeros((0,), dtype=bool)
+
+    @property
+    def discrete_mask(self) -> jnp.ndarray:
+        """The complement of `continuous_mask` -- see there."""
+        return ~self.continuous_mask
 
     def flatten_params(self, params: Optional[Any] = None, _prefix: str = "") -> Dict[str, Any]:
         """

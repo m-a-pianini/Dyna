@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import warnings
 from typing import Any, Callable, List, NamedTuple, Optional, Sequence, Union
+from functools import partial
 
 import numpy as np
 import jax
@@ -346,6 +347,68 @@ def spiking_integrator(
 # lookup, not something evaluated per loop iteration) rather than inside the
 # traced loop body.
 _EVENT_OCCURRED = getattr(getattr(dfx, "RESULTS", None), "event_occurred", None)
+
+@partial(jax.jit, static_argnames=("system", "solver", "n_events", "saveat"))
+def integrate_event_hybrid_jit(
+    system: Union[DynamicalSystem, FlowFn],
+    cond_fn: CondFn,
+    jump_fn: JumpFn,
+    y0: jnp.ndarray,
+    args: Any,
+    t0: float,
+    t1: float,
+    n_events: int,
+    solver: Optional["dfx.AbstractSolver"] = None,
+    root_finder: Optional["optx.AbstractRootFinder"] = None,
+    saveat: Optional["dfx.SaveAt"] = None,
+    diffeqsolve_kwargs: Optional[dict] = None,        
+):
+    solver = solver or dfx.Kvaerno4()
+    root_finder = root_finder or optx.Newton(rtol=1e-8, atol=1e-8)
+    diffeqsolve_kwargs = dict(diffeqsolve_kwargs or {})
+    saveat = saveat or dfx.SaveAt(t0=True, t1=True, steps=n_events)
+
+    flow = _as_flow(system)
+    term = dfx.ODETerm(flow)
+    event = dfx.Event(cond_fn, root_finder)
+
+    dt = (t1-t0)/n_events
+
+    y0 = jnp.asarray(y0)
+
+    def cond(carry):
+        t, y, idx, ets, ess = carry
+        return jnp.logical_and(t < t1 - 1e-9, idx < max_events)
+
+    def step_one_event(carry, k):
+        _state0, t = carry
+        sol = dfx.diffeqsolve(
+            term, solver, t0=t, t1=t1, dt0=dt, y0=_state0,
+            args=args, event=event, saveat=dfx.SaveAt(t1=True),
+            **diffeqsolve_kwargs,
+        )
+        ts = sol.ts
+        ys = sol.ys
+        t_stop, y_stop = ts[-1], ys[-1]
+
+        if _EVENT_OCCURRED is not None:
+            fired = sol.result == _EVENT_OCCURRED
+        else:
+            fired = t_stop < t1 - 1e-9
+
+        y_jumped = jnp.asarray(jump_fn(t_stop, jnp.asarray(y_stop), args))
+        y_next = jnp.where(fired, y_jumped, y_stop)
+
+        return (y_next, t_stop), 
+
+    carry0 = (y0, t0)
+    carry, ser = jax.lax.scan(
+        step_one_event, carry0, None, length=n_events
+    )
+
+
+    return t_final, y_final, event_times, event_states, n_events
+
 
 
 def integrate_hybrid_jit(

@@ -64,7 +64,7 @@ import jax.numpy as jnp
 import diffrax as dfx
 import optimistix as optx
 
-from ..dynsys import DynamicalSystem
+from dyna.dynsys import DynamicalSystem
 
 __all__ = [
     "HybridSolution",
@@ -212,106 +212,6 @@ def integrate_hybrid(
 
 
 # --------------------------------------------------------------------------
-# Common recipe: spiking-neuron voltage threshold/reset + discrete synapses
-# --------------------------------------------------------------------------
-
-def make_threshold_condition(
-    voltage_indices: Sequence[int],
-    threshold: Union[float, Sequence[float]],
-) -> CondFn:
-    """
-    Generic "first spike" event condition over one or more neurons: negative
-    while every named voltage is below its own threshold, and crosses zero
-    at the first instant ANY one of them reaches it (min-reduction -- valid
-    as a root-finding target because generically only one component crosses
-    zero at a time; near-simultaneous spikes are still each caught, one per
-    event, since `spiking_integrator`'s loop re-solves after every jump).
-    """
-    voltage_indices_arr = jnp.asarray(voltage_indices)
-    threshold_arr = jnp.broadcast_to(jnp.asarray(threshold, dtype=jnp.float64), voltage_indices_arr.shape)
-
-    def cond_fn(t, y, args, **kwargs):
-        v = y[voltage_indices_arr]
-        return jnp.min(threshold_arr - v)
-
-    return cond_fn
-
-
-def make_spike_jump(
-    voltage_indices: Sequence[int],
-    threshold: Union[float, Sequence[float]],
-    v_reset: Union[float, Sequence[float]],
-    synapse_step_fn: Optional[JumpFn] = None,
-) -> JumpFn:
-    """
-    The common spiking-neuron jump: reset whichever voltage(s) actually
-    reached their threshold back to `v_reset` (checked per-neuron at the
-    event, so near-simultaneous spikes are each handled correctly), THEN --
-    in the SAME jump -- apply `synapse_step_fn` (typically a composite's own
-    `.step`, carrying whatever discrete synapse-weight update rule you've
-    wired in, e.g. STDP driven by the exact spike time) to the result.
-    Pass `synapse_step_fn=None` to reset voltages only, with no synapse update.
-    """
-    voltage_indices_arr = jnp.asarray(voltage_indices)
-    threshold_arr = jnp.broadcast_to(jnp.asarray(threshold, dtype=jnp.float64), voltage_indices_arr.shape)
-    v_reset_arr = jnp.broadcast_to(jnp.asarray(v_reset, dtype=jnp.float64), voltage_indices_arr.shape)
-
-    def jump_fn(t, y, args):
-        v = y[voltage_indices_arr]
-        spiked = v >= threshold_arr
-        v_new = jnp.where(spiked, v_reset_arr, v)
-        y = y.at[voltage_indices_arr].set(v_new)
-        if synapse_step_fn is not None:
-            y = synapse_step_fn(t, y, args)
-        return y
-
-    return jump_fn
-
-
-def spiking_integrator(
-    system: DynamicalSystem,
-    voltage_indices: Sequence[int],
-    threshold: Union[float, Sequence[float]],
-    v_reset: Union[float, Sequence[float]],
-    y0: jnp.ndarray,
-    args: Any,
-    t0: float,
-    t1: float,
-    dt0: float,
-    update_synapses: bool = True,
-    **kwargs: Any,
-) -> HybridSolution:
-    """
-    The common use case: integrate `system` (typically a CompositeSystem
-    wiring together continuous spiking-neuron voltage dynamics with a
-    discrete synapse-weight update rule -- e.g. STDP -- driven by spike
-    times) with exact, event-driven spike detection and reset.
-
-    voltage_indices : indices into `system`'s GLOBAL state vector of each
-                      neuron's own membrane-voltage variable, e.g. via
-                      `system.state_slice("neuron0.v")` on a composite.
-    threshold, v_reset : a scalar (shared by every neuron) or one value per
-                      entry of `voltage_indices`.
-    update_synapses : if True (default), `system.step` runs in the SAME jump
-                      as the voltage reset -- this is where any discretely-
-                      updated synapse weights (composed as ordinary discrete
-                      subsystems, see CompositeSystem) actually see the spike
-                      and update. Set False to reset voltages only.
-    **kwargs        : forwarded to `integrate_hybrid` (solver, root_finder,
-                      saveat, max_events, diffeqsolve_kwargs).
-
-    This is a thin, fully-inspectable composition of `integrate_hybrid` +
-    `make_threshold_condition` + `make_spike_jump` -- read those (or this
-    function's body) as a template for a different recipe on a hybrid system
-    that doesn't fit this one.
-    """
-    cond_fn = make_threshold_condition(voltage_indices, threshold)
-    synapse_step_fn = _as_step(system) if update_synapses else None
-    jump_fn = make_spike_jump(voltage_indices, threshold, v_reset, synapse_step_fn=synapse_step_fn)
-    return integrate_hybrid(system, cond_fn, jump_fn, y0, args, t0, t1, dt0, **kwargs)
-
-
-# --------------------------------------------------------------------------
 # jit/grad/vmap-compatible counterparts
 # --------------------------------------------------------------------------
 #
@@ -348,8 +248,8 @@ def spiking_integrator(
 # traced loop body.
 _EVENT_OCCURRED = getattr(getattr(dfx, "RESULTS", None), "event_occurred", None)
 
-@partial(jax.jit, static_argnames=("system", "solver", "n_events", "saveat"))
-def integrate_event_hybrid_jit(
+@partial(jax.jit, static_argnames=("system", "solver", "n_intervals", "saveat"))
+def integrate_traj_hybrid_jit(
     system: Union[DynamicalSystem, FlowFn],
     cond_fn: CondFn,
     jump_fn: JumpFn,
@@ -357,7 +257,7 @@ def integrate_event_hybrid_jit(
     args: Any,
     t0: float,
     t1: float,
-    n_events: int,
+    n_intervals: int,
     solver: Optional["dfx.AbstractSolver"] = None,
     root_finder: Optional["optx.AbstractRootFinder"] = None,
     saveat: Optional["dfx.SaveAt"] = None,
@@ -366,30 +266,37 @@ def integrate_event_hybrid_jit(
     solver = solver or dfx.Kvaerno4()
     root_finder = root_finder or optx.Newton(rtol=1e-8, atol=1e-8)
     diffeqsolve_kwargs = dict(diffeqsolve_kwargs or {})
-    saveat = saveat or dfx.SaveAt(t0=True, t1=True, steps=n_events)
+    saveat = saveat or dfx.SaveAt(t0=True, t1=True, steps=n_intervals)
 
     flow = _as_flow(system)
     term = dfx.ODETerm(flow)
     event = dfx.Event(cond_fn, root_finder)
 
-    dt = (t1-t0)/n_events
+    dt = (t1-t0)/n_intervals
 
     y0 = jnp.asarray(y0)
+    event_times0 = jnp.full((n_intervals,), jnp.nan)
+    event_states0 = jnp.full((n_intervals,) + y0.shape, jnp.nan)
+
+    t_out = jnp.zeros((n_intervals, ))
+    out0 = jnp.zeros((n_intervals, y0.shape[0]))
 
     def cond(carry):
-        t, y, idx, ets, ess = carry
-        return jnp.logical_and(t < t1 - 1e-9, idx < max_events)
+        t, y, idx, ets, ess, sol_idx, out, t_out = carry
+        return jnp.logical_and(t < t1 - 1e-9, idx < n_intervals)
 
-    def step_one_event(carry, k):
-        _state0, t = carry
+    def body(carry):
+        t, y, idx, ets, ess, sol_idx, _out, _t_out = carry
         sol = dfx.diffeqsolve(
-            term, solver, t0=t, t1=t1, dt0=dt, y0=_state0,
+            term, solver, t0=t, t1=t1, dt0=dt, y0=y,
             args=args, event=event, saveat=dfx.SaveAt(t1=True),
             **diffeqsolve_kwargs,
         )
         ts = sol.ts
         ys = sol.ys
-        t_stop, y_stop = ts[-1], ys[-1]
+        steps_done = ts.shape[0]
+        t_stop = ts[-1]
+        y_stop = ys[-1]
 
         if _EVENT_OCCURRED is not None:
             fired = sol.result == _EVENT_OCCURRED
@@ -398,17 +305,20 @@ def integrate_event_hybrid_jit(
 
         y_jumped = jnp.asarray(jump_fn(t_stop, jnp.asarray(y_stop), args))
         y_next = jnp.where(fired, y_jumped, y_stop)
+        ets_next = jnp.where(fired, ets.at[idx].set(t_stop), ets)
+        ess_next = jnp.where(fired, ess.at[idx].set(y_jumped), ess)
+        idx_next = idx + jnp.where(fired, 1, 0)
 
-        return (y_next, t_stop), 
+        _out = _out.at[sol_idx:sol_idx+steps_done].set(ys)
+        _t_out = _t_out.at[sol_idx:sol_idx+steps_done].set(ts)
+        sol_idx_next = sol_idx + steps_done
+        return (t_stop, y_next, idx_next, ets_next, ess_next, sol_idx_next, _out, _t_out)
 
-    carry0 = (y0, t0)
-    carry, ser = jax.lax.scan(
-        step_one_event, carry0, None, length=n_events
+    carry0 = (t0, y0, 0, event_times0, event_states0, 0, out0)
+    t_final, y_final, idx, event_times, event_states, sol_idx, out, t_out = jax.lax.while_loop(
+        cond, body, carry0
     )
-
-
-    return t_final, y_final, event_times, event_states, n_events
-
+    return t_final, y_final, idx, event_times, event_states, sol_idx, out, t_out
 
 
 def integrate_hybrid_jit(
@@ -509,7 +419,102 @@ def spiking_integrator_jit(
     return integrate_hybrid_jit(system, cond_fn, jump_fn, y0, args, t0, t1, dt0, max_events, **kwargs)
 
 
-# TODO: Diffrax lacks symplectic integrators, implement one
-# TODO: same for unitary (split-op routines, ...)
+# --------------------------------------------------------------------------
+# Common recipe: spiking-neuron voltage threshold/reset + discrete synapses
+# --------------------------------------------------------------------------
 
-# TODO: some tests and implementations for the method of lines with diffrax
+def make_threshold_condition(
+    voltage_indices: Sequence[int],
+    threshold: Union[float, Sequence[float]],
+) -> CondFn:
+    """
+    Generic "first spike" event condition over one or more neurons: negative
+    while every named voltage is below its own threshold, and crosses zero
+    at the first instant ANY one of them reaches it (min-reduction -- valid
+    as a root-finding target because generically only one component crosses
+    zero at a time; near-simultaneous spikes are still each caught, one per
+    event, since `spiking_integrator`'s loop re-solves after every jump).
+    """
+    voltage_indices_arr = jnp.asarray(voltage_indices)
+    threshold_arr = jnp.broadcast_to(jnp.asarray(threshold, dtype=jnp.float64), voltage_indices_arr.shape)
+
+    def cond_fn(t, y, args, **kwargs):
+        v = y[voltage_indices_arr]
+        return jnp.min(threshold_arr - v)
+
+    return cond_fn
+
+
+def make_spike_jump(
+    voltage_indices: Sequence[int],
+    threshold: Union[float, Sequence[float]],
+    v_reset: Union[float, Sequence[float]],
+    synapse_step_fn: Optional[JumpFn] = None,
+) -> JumpFn:
+    """
+    The common spiking-neuron jump: reset whichever voltage(s) actually
+    reached their threshold back to `v_reset` (checked per-neuron at the
+    event, so near-simultaneous spikes are each handled correctly), THEN --
+    in the SAME jump -- apply `synapse_step_fn` (typically a composite's own
+    `.step`, carrying whatever discrete synapse-weight update rule you've
+    wired in, e.g. STDP driven by the exact spike time) to the result.
+    Pass `synapse_step_fn=None` to reset voltages only, with no synapse update.
+    """
+    voltage_indices_arr = jnp.asarray(voltage_indices)
+    threshold_arr = jnp.broadcast_to(jnp.asarray(threshold, dtype=jnp.float64), voltage_indices_arr.shape)
+    v_reset_arr = jnp.broadcast_to(jnp.asarray(v_reset, dtype=jnp.float64), voltage_indices_arr.shape)
+
+    def jump_fn(t, y, args):
+        v = y[voltage_indices_arr]
+        spiked = v >= threshold_arr
+        v_new = jnp.where(spiked, v_reset_arr, v)
+        y = y.at[voltage_indices_arr].set(v_new)
+        if synapse_step_fn is not None:
+            y = synapse_step_fn(t, y, args)
+        return y
+
+    return jump_fn
+
+
+def spiking_integrator(
+    system: DynamicalSystem,
+    voltage_indices: Sequence[int],
+    threshold: Union[float, Sequence[float]],
+    v_reset: Union[float, Sequence[float]],
+    y0: jnp.ndarray,
+    args: Any,
+    t0: float,
+    t1: float,
+    dt0: float,
+    update_synapses: bool = True,
+    **kwargs: Any,
+) -> HybridSolution:
+    """
+    The common use case: integrate `system` (typically a CompositeSystem
+    wiring together continuous spiking-neuron voltage dynamics with a
+    discrete synapse-weight update rule -- e.g. STDP -- driven by spike
+    times) with exact, event-driven spike detection and reset.
+
+    voltage_indices : indices into `system`'s GLOBAL state vector of each
+                      neuron's own membrane-voltage variable, e.g. via
+                      `system.state_slice("neuron0.v")` on a composite.
+    threshold, v_reset : a scalar (shared by every neuron) or one value per
+                      entry of `voltage_indices`.
+    update_synapses : if True (default), `system.step` runs in the SAME jump
+                      as the voltage reset -- this is where any discretely-
+                      updated synapse weights (composed as ordinary discrete
+                      subsystems, see CompositeSystem) actually see the spike
+                      and update. Set False to reset voltages only.
+    **kwargs        : forwarded to `integrate_hybrid` (solver, root_finder,
+                      saveat, max_events, diffeqsolve_kwargs).
+
+    This is a thin, fully-inspectable composition of `integrate_hybrid` +
+    `make_threshold_condition` + `make_spike_jump` -- read those (or this
+    function's body) as a template for a different recipe on a hybrid system
+    that doesn't fit this one.
+    """
+    cond_fn = make_threshold_condition(voltage_indices, threshold)
+    synapse_step_fn = _as_step(system) if update_synapses else None
+    jump_fn = make_spike_jump(voltage_indices, threshold, v_reset, synapse_step_fn=synapse_step_fn)
+    return integrate_hybrid(system, cond_fn, jump_fn, y0, args, t0, t1, dt0, **kwargs)
+

@@ -58,6 +58,7 @@ import warnings
 from typing import Any, Callable, List, NamedTuple, Optional, Sequence, Union
 
 import numpy as np
+import jax
 import jax.numpy as jnp
 import diffrax as dfx
 import optimistix as optx
@@ -70,6 +71,8 @@ __all__ = [
     "make_threshold_condition",
     "make_spike_jump",
     "spiking_integrator",
+    "integrate_hybrid_jit",
+    "spiking_integrator_jit",
 ]
 
 FlowFn = Callable[[Any, jnp.ndarray, Any], jnp.ndarray]   # (t, y, args) -> dy
@@ -305,6 +308,142 @@ def spiking_integrator(
     synapse_step_fn = _as_step(system) if update_synapses else None
     jump_fn = make_spike_jump(voltage_indices, threshold, v_reset, synapse_step_fn=synapse_step_fn)
     return integrate_hybrid(system, cond_fn, jump_fn, y0, args, t0, t1, dt0, **kwargs)
+
+
+# --------------------------------------------------------------------------
+# jit/grad/vmap-compatible counterparts
+# --------------------------------------------------------------------------
+#
+# `integrate_hybrid`/`spiking_integrator` above are eager-only: the Python
+# `while` loop has a data-dependent trip count (however many events actually
+# fire), and does `float(...)`/`np.asarray(...)`/Python `if` on what would be
+# TRACED values under `jax.jit` -- none of that is legal there, and the
+# output arrays' length (number of events) isn't a fixed shape either, which
+# `jit` also requires.
+#
+# The versions below trade a little flexibility for being fully traceable:
+#   - `max_events` becomes a HARD, static bound (fixes the output shape) --
+#     not just a safety net as before. If more events actually occur, only
+#     the first `max_events` are applied and integration stops there; check
+#     the returned `n_events == max_events` to detect this happened.
+#   - only event times/post-jump states and the final (t, y) come back --
+#     NOT a dense trajectory, since "total solver steps across an unknown
+#     number of segments" has no fixed shape either. Use the eager
+#     `integrate_hybrid` for plotting/exploration; use these for anything
+#     performance- or gradient-critical (e.g. optimizing synapse parameters
+#     through many spikes, or `vmap`-ing over a batch of initial conditions).
+#   - the Python `while`/`if` become `jax.lax.while_loop`/`jnp.where`.
+#
+# `max_events` must be a Python int fixed at trace time -- if you wrap
+# `integrate_hybrid_jit`/`spiking_integrator_jit` themselves in `jax.jit`,
+# mark it (and typically `t0`/`t1`/`dt0`/`solver`/`root_finder`) static, e.g.
+# `jax.jit(spiking_integrator_jit, static_argnames=("max_events", "solver"))`.
+
+# Preferred, version-robust "did this segment stop at an event" signal:
+# diffrax's own (traced-safe) result code, if your version exposes it under
+# this name; falls back to the same time-comparison used in the eager
+# version above if not. This is resolved once here (a plain attribute
+# lookup, not something evaluated per loop iteration) rather than inside the
+# traced loop body.
+_EVENT_OCCURRED = getattr(getattr(dfx, "RESULTS", None), "event_occurred", None)
+
+
+def integrate_hybrid_jit(
+    system: Union[DynamicalSystem, FlowFn],
+    cond_fn: CondFn,
+    jump_fn: JumpFn,
+    y0: jnp.ndarray,
+    args: Any,
+    t0: float,
+    t1: float,
+    dt0: float,
+    max_events: int,
+    solver: Optional["dfx.AbstractSolver"] = None,
+    root_finder: Optional["optx.AbstractRootFinder"] = None,
+    diffeqsolve_kwargs: Optional[dict] = None,
+) -> tuple:
+    """
+    jit/grad/vmap-compatible counterpart to `integrate_hybrid` (see the
+    section banner above for the trade-offs). Uses `jax.lax.while_loop` in
+    place of the eager Python `while`, and `jnp.where` in place of the
+    eager Python `if`/list bookkeeping.
+
+    Returns `(t_final, y_final, event_times, event_states, n_events)`:
+      - `t_final`, `y_final`: state at `t1` (or at the `max_events`-th event,
+        if that bound was hit first).
+      - `event_times`: shape `(max_events,)`, NaN past the first `n_events` entries.
+      - `event_states`: shape `(max_events, *y0.shape)`, NaN-padded likewise
+        -- the state immediately AFTER each jump.
+      - `n_events`: how many of the `max_events` slots are real.
+    """
+    solver = solver or dfx.Tsit5()
+    root_finder = root_finder or optx.Newton(rtol=1e-8, atol=1e-8)
+    diffeqsolve_kwargs = dict(diffeqsolve_kwargs or {})
+
+    flow = _as_flow(system)
+    term = dfx.ODETerm(flow)
+    event = dfx.Event(cond_fn, root_finder)
+
+    y0 = jnp.asarray(y0)
+    event_times0 = jnp.full((max_events,), jnp.nan)
+    event_states0 = jnp.full((max_events,) + y0.shape, jnp.nan)
+
+    def cond(carry):
+        t, y, idx, ets, ess = carry
+        return jnp.logical_and(t < t1 - 1e-9, idx < max_events)
+
+    def body(carry):
+        t, y, idx, ets, ess = carry
+        sol = dfx.diffeqsolve(
+            term, solver, t0=t, t1=t1, dt0=dt0, y0=y,
+            args=args, event=event, saveat=dfx.SaveAt(t1=True),
+            **diffeqsolve_kwargs,
+        )
+        t_stop = sol.ts[-1]
+        y_stop = sol.ys[-1]
+
+        if _EVENT_OCCURRED is not None:
+            fired = sol.result == _EVENT_OCCURRED
+        else:
+            fired = t_stop < t1 - 1e-9
+
+        y_jumped = jnp.asarray(jump_fn(t_stop, jnp.asarray(y_stop), args))
+        y_next = jnp.where(fired, y_jumped, y_stop)
+        ets_next = jnp.where(fired, ets.at[idx].set(t_stop), ets)
+        ess_next = jnp.where(fired, ess.at[idx].set(y_jumped), ess)
+        idx_next = idx + jnp.where(fired, 1, 0)
+        return (t_stop, y_next, idx_next, ets_next, ess_next)
+
+    t_final, y_final, n_events, event_times, event_states = jax.lax.while_loop(
+        cond, body, (t0, y0, 0, event_times0, event_states0)
+    )
+    return t_final, y_final, event_times, event_states, n_events
+
+
+def spiking_integrator_jit(
+    system: DynamicalSystem,
+    voltage_indices: Sequence[int],
+    threshold: Union[float, Sequence[float]],
+    v_reset: Union[float, Sequence[float]],
+    y0: jnp.ndarray,
+    args: Any,
+    t0: float,
+    t1: float,
+    dt0: float,
+    max_events: int,
+    update_synapses: bool = True,
+    **kwargs: Any,
+) -> tuple:
+    """
+    jit/grad/vmap-compatible counterpart to `spiking_integrator` -- same
+    recipe (threshold spike + reset + in-jump synapse `.step`), built on
+    `integrate_hybrid_jit`. See that function's docstring for the returned
+    tuple shape and the `max_events`/no-dense-trajectory trade-offs.
+    """
+    cond_fn = make_threshold_condition(voltage_indices, threshold)
+    synapse_step_fn = _as_step(system) if update_synapses else None
+    jump_fn = make_spike_jump(voltage_indices, threshold, v_reset, synapse_step_fn=synapse_step_fn)
+    return integrate_hybrid_jit(system, cond_fn, jump_fn, y0, args, t0, t1, dt0, max_events, **kwargs)
 
 
 # TODO: Diffrax lacks symplectic integrators, implement one

@@ -628,12 +628,6 @@ class CompositeSystem(DynamicalSystem):
 
         domains = {s.domain for s in self.subsystems}
         domain: Domain = domains.pop() if len(domains) == 1 else "hybrid"
-        if domain == "hybrid":
-            warnings.warn(
-                f"CompositeSystem '{name}' mixes continuous and discrete subsystems "
-                f"(domain='hybrid'). This framework only assembles the dynamics "
-                f"function; you are responsible for integrating each part correctly."
-            )
 
         default_params = {s.name: s.default_params for s in self.subsystems}
 

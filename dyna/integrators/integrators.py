@@ -65,6 +65,7 @@ import diffrax as dfx
 import optimistix as optx
 
 from dyna.dynsys import DynamicalSystem
+jax.config.update("jax_enable_x64", True)
 
 __all__ = [
     "HybridSolution",
@@ -75,6 +76,8 @@ __all__ = [
     "integrate_hybrid_jit",
     "spiking_integrator_jit",
 ]
+
+DEFAULT_ROOT_FINDER = optx.Newton(rtol=1e-5, atol=1e-5, norm=optx.rms_norm, cauchy_termination=False)
 
 FlowFn = Callable[[Any, jnp.ndarray, Any], jnp.ndarray]   # (t, y, args) -> dy
 CondFn = Callable[..., Any]                               # (t, y, args, **kwargs) -> scalar
@@ -142,13 +145,13 @@ def integrate_hybrid(
     `threshold - v`, negative below threshold, crossing zero as `v` reaches
     it) rather than a boolean.
     """
-    solver = solver or dfx.Tsit5()
-    root_finder = root_finder or optx.Newton(rtol=1e-8, atol=1e-8)
+    solver = solver or dfx.Dopri5()
+    root_finder = root_finder or DEFAULT_ROOT_FINDER
     diffeqsolve_kwargs = dict(diffeqsolve_kwargs or {})
 
     flow = _as_flow(system)
     term = dfx.ODETerm(flow)
-    event = dfx.Event(cond_fn, root_finder)
+    event = dfx.Event(cond_fn, root_finder, direction=False)
     seg_saveat = saveat or dfx.SaveAt(steps=True, t1=True)
 
     ts_chunks: List[jnp.ndarray] = [jnp.asarray([t0])]
@@ -160,7 +163,7 @@ def integrate_hybrid(
     while t < t1:
         sol = dfx.diffeqsolve(
             term, solver, t0=t, t1=t1, dt0=dt0, y0=y,
-            args=args, event=event, saveat=seg_saveat,
+            args=args, event=event, saveat=seg_saveat, max_steps=1000000,
             **diffeqsolve_kwargs,
         )
         seg_ts = jnp.asarray(sol.ts)
@@ -197,10 +200,9 @@ def integrate_hybrid(
 
         y_jumped = jnp.asarray(jump_fn(t_stop, jnp.asarray(y_stop), args))
         event_times.append(t_stop)
-        # Record the post-jump state at the same instant too, so the jump
-        # shows up as an explicit discontinuity in the stitched trajectory.
-        ts_chunks.append(jnp.asarray([t_stop]))
-        ys_chunks.append(jnp.asarray(y_jumped)[None, ...])
+        # Replace the pre-jump endpoint instead of adding a second sample at
+        # the same time. The event time remains available separately.
+        ys_chunks[-1] = ys_chunks[-1].at[-1].set(y_jumped)
 
         t, y = t_stop, y_jumped
 
@@ -248,7 +250,7 @@ def integrate_hybrid(
 # traced loop body.
 _EVENT_OCCURRED = getattr(getattr(dfx, "RESULTS", None), "event_occurred", None)
 
-@partial(jax.jit, static_argnames=("system", "solver", "n_intervals", "saveat"))
+@partial(jax.jit, static_argnames=("system", "cond_fn", "jump_fn", "solver", "n_intervals"))
 def integrate_traj_hybrid_jit(
     system: Union[DynamicalSystem, FlowFn],
     cond_fn: CondFn,
@@ -260,65 +262,74 @@ def integrate_traj_hybrid_jit(
     n_intervals: int,
     solver: Optional["dfx.AbstractSolver"] = None,
     root_finder: Optional["optx.AbstractRootFinder"] = None,
-    saveat: Optional["dfx.SaveAt"] = None,
-    diffeqsolve_kwargs: Optional[dict] = None,        
+    diffeqsolve_kwargs: Optional[dict] = None,
 ):
-    solver = solver or dfx.Kvaerno4()
-    root_finder = root_finder or optx.Newton(rtol=1e-8, atol=1e-8)
+    solver = solver or dfx.Dopri5()
+    root_finder = root_finder or DEFAULT_ROOT_FINDER
     diffeqsolve_kwargs = dict(diffeqsolve_kwargs or {})
-    saveat = saveat or dfx.SaveAt(t0=True, t1=True, steps=n_intervals)
 
     flow = _as_flow(system)
     term = dfx.ODETerm(flow)
-    event = dfx.Event(cond_fn, root_finder)
-
-    dt = (t1-t0)/n_intervals
+    event = dfx.Event(cond_fn, root_finder, direction=False)
 
     y0 = jnp.asarray(y0)
-    event_times0 = jnp.full((n_intervals,), jnp.nan)
-    event_states0 = jnp.full((n_intervals,) + y0.shape, jnp.nan)
+    grid = jnp.linspace(t0, t1, n_intervals + 1)
+    event_times0 = jnp.full((n_intervals,), jnp.nan, dtype=y0.dtype)
+    event_states0 = jnp.full((n_intervals,) + y0.shape, jnp.nan, dtype=y0.dtype)
+    out0 = jnp.full((n_intervals + 1,) + y0.shape, jnp.nan, dtype=y0.dtype)
+    out0 = out0.at[0].set(y0)
 
-    t_out = jnp.zeros((n_intervals, ))
-    out0 = jnp.zeros((n_intervals, y0.shape[0]))
+    # Outer logic: integrate on a grid of n_intervals
+    def interval_body(sample_idx, carry):
+        y, event_idx, event_times, event_states = carry
+        interval_t0 = grid[sample_idx]
+        interval_t1 = grid[sample_idx + 1]
 
-    def cond(carry):
-        t, y, idx, ets, ess, sol_idx, out, t_out = carry
-        return jnp.logical_and(t < t1 - 1e-9, idx < n_intervals)
+        def event_cond(inner_carry):
+            t, _, idx, _, _ = inner_carry
+            return jnp.logical_and(t < interval_t1 - 1e-9, idx < n_intervals)
 
-    def body(carry):
-        t, y, idx, ets, ess, sol_idx, _out, _t_out = carry
-        sol = dfx.diffeqsolve(
-            term, solver, t0=t, t1=t1, dt0=dt, y0=y,
-            args=args, event=event, saveat=dfx.SaveAt(t1=True),
-            **diffeqsolve_kwargs,
+        def event_body(inner_carry):
+            t, state, idx, times, states = inner_carry
+            sol = dfx.diffeqsolve(
+                term, solver, t0=t, t1=interval_t1,
+                dt0=(t1 - t0) / n_intervals, y0=state, args=args,
+                event=event, saveat=dfx.SaveAt(t1=True),
+                max_steps=1000000, **diffeqsolve_kwargs,
+            )
+            t_stop = sol.ts[-1]
+            y_stop = sol.ys[-1]
+            if _EVENT_OCCURRED is not None:
+                fired = sol.result == _EVENT_OCCURRED
+            else:
+                fired = t_stop < interval_t1 - 1e-9
+            y_jumped = jnp.asarray(jump_fn(t_stop, y_stop, args))
+            next_state = jnp.where(fired, y_jumped, y_stop)
+            next_times = jnp.where(fired, times.at[idx].set(t_stop), times)
+            next_states = jnp.where(fired, states.at[idx].set(y_jumped), states)
+            next_idx = idx + jnp.where(fired, 1, 0)
+            return t_stop, next_state, next_idx, next_times, next_states
+
+        # Inner logic: integrate inside a interval up until the end, stopping at events to
+        # make the jump step
+        _, y_final, event_idx, event_times, event_states = jax.lax.while_loop(
+            event_cond, event_body,
+            (interval_t0, y, event_idx, event_times, event_states),
         )
-        ts = sol.ts
-        ys = sol.ys
-        steps_done = ts.shape[0]
-        t_stop = ts[-1]
-        y_stop = ys[-1]
+        return y_final, event_idx, event_times, event_states
 
-        if _EVENT_OCCURRED is not None:
-            fired = sol.result == _EVENT_OCCURRED
-        else:
-            fired = t_stop < t1 - 1e-9
+    def sample_body(sample_idx, carry):
+        y, event_idx, event_times, event_states, out = carry
+        y, event_idx, event_times, event_states = interval_body(
+            sample_idx, (y, event_idx, event_times, event_states)
+        )
+        return y, event_idx, event_times, event_states, out.at[sample_idx + 1].set(y)
 
-        y_jumped = jnp.asarray(jump_fn(t_stop, jnp.asarray(y_stop), args))
-        y_next = jnp.where(fired, y_jumped, y_stop)
-        ets_next = jnp.where(fired, ets.at[idx].set(t_stop), ets)
-        ess_next = jnp.where(fired, ess.at[idx].set(y_jumped), ess)
-        idx_next = idx + jnp.where(fired, 1, 0)
-
-        _out = _out.at[sol_idx:sol_idx+steps_done].set(ys)
-        _t_out = _t_out.at[sol_idx:sol_idx+steps_done].set(ts)
-        sol_idx_next = sol_idx + steps_done
-        return (t_stop, y_next, idx_next, ets_next, ess_next, sol_idx_next, _out, _t_out)
-
-    carry0 = (t0, y0, 0, event_times0, event_states0, 0, out0)
-    t_final, y_final, idx, event_times, event_states, sol_idx, out, t_out = jax.lax.while_loop(
-        cond, body, carry0
+    carry0 = (y0, 0, event_times0, event_states0, out0)
+    y_final, n_events, event_times, event_states, out = jax.lax.fori_loop(
+        0, n_intervals, sample_body, carry0
     )
-    return t_final, y_final, idx, event_times, event_states, sol_idx, out, t_out
+    return grid[-1], y_final, n_events, event_times, event_states, n_intervals + 1, out, grid
 
 
 def integrate_hybrid_jit(
@@ -349,13 +360,13 @@ def integrate_hybrid_jit(
         -- the state immediately AFTER each jump.
       - `n_events`: how many of the `max_events` slots are real.
     """
-    solver = solver or dfx.Tsit5()
-    root_finder = root_finder or optx.Newton(rtol=1e-8, atol=1e-8)
+    solver = solver or dfx.Dopri5()
+    root_finder = root_finder or DEFAULT_ROOT_FINDER
     diffeqsolve_kwargs = dict(diffeqsolve_kwargs or {})
 
     flow = _as_flow(system)
     term = dfx.ODETerm(flow)
-    event = dfx.Event(cond_fn, root_finder)
+    event = dfx.Event(cond_fn, root_finder, direction=False)
 
     y0 = jnp.asarray(y0)
     event_times0 = jnp.full((max_events,), jnp.nan)
@@ -369,7 +380,7 @@ def integrate_hybrid_jit(
         t, y, idx, ets, ess = carry
         sol = dfx.diffeqsolve(
             term, solver, t0=t, t1=t1, dt0=dt0, y0=y,
-            args=args, event=event, saveat=dfx.SaveAt(t1=True),
+            args=args, event=event, max_steps=1000000,
             **diffeqsolve_kwargs,
         )
         t_stop = sol.ts[-1]
@@ -393,32 +404,6 @@ def integrate_hybrid_jit(
     return t_final, y_final, event_times, event_states, n_events
 
 
-def spiking_integrator_jit(
-    system: DynamicalSystem,
-    voltage_indices: Sequence[int],
-    threshold: Union[float, Sequence[float]],
-    v_reset: Union[float, Sequence[float]],
-    y0: jnp.ndarray,
-    args: Any,
-    t0: float,
-    t1: float,
-    dt0: float,
-    max_events: int,
-    update_synapses: bool = True,
-    **kwargs: Any,
-) -> tuple:
-    """
-    jit/grad/vmap-compatible counterpart to `spiking_integrator` -- same
-    recipe (threshold spike + reset + in-jump synapse `.step`), built on
-    `integrate_hybrid_jit`. See that function's docstring for the returned
-    tuple shape and the `max_events`/no-dense-trajectory trade-offs.
-    """
-    cond_fn = make_threshold_condition(voltage_indices, threshold)
-    synapse_step_fn = _as_step(system) if update_synapses else None
-    jump_fn = make_spike_jump(voltage_indices, threshold, v_reset, synapse_step_fn=synapse_step_fn)
-    return integrate_hybrid_jit(system, cond_fn, jump_fn, y0, args, t0, t1, dt0, max_events, **kwargs)
-
-
 # --------------------------------------------------------------------------
 # Common recipe: spiking-neuron voltage threshold/reset + discrete synapses
 # --------------------------------------------------------------------------
@@ -427,14 +412,7 @@ def make_threshold_condition(
     voltage_indices: Sequence[int],
     threshold: Union[float, Sequence[float]],
 ) -> CondFn:
-    """
-    Generic "first spike" event condition over one or more neurons: negative
-    while every named voltage is below its own threshold, and crosses zero
-    at the first instant ANY one of them reaches it (min-reduction -- valid
-    as a root-finding target because generically only one component crosses
-    zero at a time; near-simultaneous spikes are still each caught, one per
-    event, since `spiking_integrator`'s loop re-solves after every jump).
-    """
+    """Return the first threshold condition across the selected voltages."""
     voltage_indices_arr = jnp.asarray(voltage_indices)
     threshold_arr = jnp.broadcast_to(jnp.asarray(threshold, dtype=jnp.float64), voltage_indices_arr.shape)
 
@@ -451,24 +429,18 @@ def make_spike_jump(
     v_reset: Union[float, Sequence[float]],
     synapse_step_fn: Optional[JumpFn] = None,
 ) -> JumpFn:
-    """
-    The common spiking-neuron jump: reset whichever voltage(s) actually
-    reached their threshold back to `v_reset` (checked per-neuron at the
-    event, so near-simultaneous spikes are each handled correctly), THEN --
-    in the SAME jump -- apply `synapse_step_fn` (typically a composite's own
-    `.step`, carrying whatever discrete synapse-weight update rule you've
-    wired in, e.g. STDP driven by the exact spike time) to the result.
-    Pass `synapse_step_fn=None` to reset voltages only, with no synapse update.
-    """
     voltage_indices_arr = jnp.asarray(voltage_indices)
     threshold_arr = jnp.broadcast_to(jnp.asarray(threshold, dtype=jnp.float64), voltage_indices_arr.shape)
     v_reset_arr = jnp.broadcast_to(jnp.asarray(v_reset, dtype=jnp.float64), voltage_indices_arr.shape)
 
     def jump_fn(t, y, args):
         v = y[voltage_indices_arr]
-        spiked = v >= threshold_arr
-        v_new = jnp.where(spiked, v_reset_arr, v)
-        y = y.at[voltage_indices_arr].set(v_new)
+        margins = threshold_arr - v
+        spiked = jnp.logical_or(
+            margins <= jnp.asarray(1e-5, dtype=v.dtype),
+            margins == jnp.min(margins),
+        )
+        y = y.at[voltage_indices_arr].set(jnp.where(spiked, v_reset_arr, v))
         if synapse_step_fn is not None:
             y = synapse_step_fn(t, y, args)
         return y
@@ -518,3 +490,54 @@ def spiking_integrator(
     jump_fn = make_spike_jump(voltage_indices, threshold, v_reset, synapse_step_fn=synapse_step_fn)
     return integrate_hybrid(system, cond_fn, jump_fn, y0, args, t0, t1, dt0, **kwargs)
 
+
+def spiking_integrator_jit(
+    system: DynamicalSystem,
+    voltage_indices: Sequence[int],
+    threshold: Union[float, Sequence[float]],
+    v_reset: Union[float, Sequence[float]],
+    y0: jnp.ndarray,
+    args: Any,
+    t0: float,
+    t1: float,
+    dt0: float,
+    max_events: int,
+    update_synapses: bool = True,
+    **kwargs: Any,
+) -> tuple:
+    """
+    jit/grad/vmap-compatible counterpart to `spiking_integrator` -- same
+    recipe (threshold spike + reset + in-jump synapse `.step`), built on
+    `integrate_hybrid_jit`. See that function's docstring for the returned
+    tuple shape and the `max_events`/no-dense-trajectory trade-offs.
+    """
+    cond_fn = make_threshold_condition(voltage_indices, threshold)
+    synapse_step_fn = _as_step(system) if update_synapses else None
+    jump_fn = make_spike_jump(voltage_indices, threshold, v_reset, synapse_step_fn=synapse_step_fn)
+    return integrate_hybrid_jit(system, cond_fn, jump_fn, y0, args, t0, t1, dt0, max_events, **kwargs)
+
+
+def spiking_integrator_jit_trajectory(
+    system: DynamicalSystem,
+    voltage_indices: Sequence[int],
+    threshold: Union[float, Sequence[float]],
+    v_reset: Union[float, Sequence[float]],
+    y0: jnp.ndarray,
+    args: Any,
+    t0: float,
+    t1: float,
+    dt0: float,
+    n_intervals: int,
+    update_synapses: bool = True,
+    **kwargs: Any,
+) -> tuple:
+    """
+    jit/grad/vmap-compatible counterpart to `spiking_integrator` -- same
+    recipe (threshold spike + reset + in-jump synapse `.step`), built on
+    `integrate_hybrid_jit`. See that function's docstring for the returned
+    tuple shape and the `max_events`/no-dense-trajectory trade-offs.
+    """
+    cond_fn = make_threshold_condition(voltage_indices, threshold)
+    synapse_step_fn = _as_step(system) if update_synapses else None
+    jump_fn = make_spike_jump(voltage_indices, threshold, v_reset, synapse_step_fn=synapse_step_fn)
+    return integrate_traj_hybrid_jit(system, cond_fn, jump_fn, y0, args, t0, t1, n_intervals, **kwargs)

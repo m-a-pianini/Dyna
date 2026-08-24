@@ -84,6 +84,7 @@ CondFn = Callable[..., Any]                               # (t, y, args, **kwarg
 JumpFn = Callable[[Any, jnp.ndarray, Any], jnp.ndarray]   # (t, y, args) -> y_new
 
 
+# TODO: uniform solution formats
 class HybridSolution(NamedTuple):
     """A stitched-together trajectory across however many events fired.
     `event_times` records the exact (root-found) time of every jump --
@@ -116,6 +117,7 @@ def _as_step(system: Union[DynamicalSystem, JumpFn]) -> JumpFn:
     return system
 
 
+# TODO: add direction arg
 def integrate_hybrid(
     system: Union[DynamicalSystem, FlowFn],
     cond_fn: CondFn,
@@ -250,6 +252,8 @@ def integrate_hybrid(
 # traced loop body.
 _EVENT_OCCURRED = getattr(getattr(dfx, "RESULTS", None), "event_occurred", None)
 
+
+# TODO: add direction arg
 @partial(jax.jit, static_argnames=("system", "cond_fn", "jump_fn", "solver", "n_intervals"))
 def integrate_traj_hybrid_jit(
     system: Union[DynamicalSystem, FlowFn],
@@ -329,9 +333,10 @@ def integrate_traj_hybrid_jit(
     y_final, n_events, event_times, event_states, out = jax.lax.fori_loop(
         0, n_intervals, sample_body, carry0
     )
-    return grid[-1], y_final, n_events, event_times, event_states, n_intervals + 1, out, grid
+    return out, grid, n_events, event_times, event_states, n_intervals + 1
 
 
+# TODO: add direction arg
 def integrate_hybrid_jit(
     system: Union[DynamicalSystem, FlowFn],
     cond_fn: CondFn,

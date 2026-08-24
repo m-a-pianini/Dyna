@@ -80,7 +80,7 @@ t_final, y_final, event_times, event_states, n_events = spiking_integrator_jit(
 print(f"[1] jit-style: {int(n_events)} spikes, event_times[:5]={np.asarray(event_times)[:5]}")
 print(event_times[:n_events], event_states[:n_events])
 
-t_final, y_final, idx, event_times, event_states, sol_idx, ys, ts = spiking_integrator_jit_trajectory(
+ys, ts, n_events, event_times, event_states, sol_idx = spiking_integrator_jit_trajectory(
     net, VOLTAGE_IDX, THRESHOLD, V_RESET,
     y0, net.default_params, T0, T1, DT0, n_intervals=MAX_EVENTS
 )

@@ -525,6 +525,9 @@ def build_graph(subsystems: Sequence[DynamicalSystem] | Sequence[str],
 # CompositeSystem
 # --------------------------------------------------------------------------
 
+# TODO: do not pass through build graph in order to not have a 2-inputs 2-outputs connection missed
+# Graphs use only one edge_property_map, 
+# so connecting two systems with more than one connection is possible only through explicit edges sequence
 class CompositeSystem(DynamicalSystem):
     """
     A `DynamicalSystem` assembled from other `DynamicalSystem`s according to a
@@ -576,9 +579,10 @@ class CompositeSystem(DynamicalSystem):
         for e in graph.edges():
             src_name = vprop[e.source()]
             dst_name = vprop[e.target()]
-            src_var, dst_var = eprop[e]
             src_sys = self._sys_by_name[src_name]
             dst_sys = self._sys_by_name[dst_name]
+
+            src_var, dst_var = eprop[e]
 
             if not src_sys.has_output_var(src_var):
                 raise ValueError(f"'{src_var}' is not a declared output of system '{src_name}'")
@@ -917,6 +921,9 @@ def connect(subsystems: Sequence[DynamicalSystem], edges: Sequence[Edge],
     graph topology, including cycles (feedback loops) -- see module docstring
     for why cycles are safe here.
     """
+    # TODO: do not pass through build graph in order to not have a 2-inputs 2-outputs connection missed
+    # Graphs use only one edge_property_map, 
+    # so connecting two systems with more than one connection is possible only through explicit edges sequence
     g = build_graph(subsystems, edges)
     return CompositeSystem(name, subsystems, g)
 
@@ -978,3 +985,7 @@ def make_clock(name: str = "clock", rate: float = 1.0, domain: Domain = "continu
         domain=domain,
         fn=fn,
     ) 
+
+
+if __name__ == "__main__":
+    pass

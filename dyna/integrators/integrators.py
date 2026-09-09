@@ -13,7 +13,9 @@ Layered design
                    or a bare diffrax-style vector field `(t, y, args) -> dy`,
      - `cond_fn` : `(t, y, args) -> scalar`, root-found via `diffrax.Event`
                    -- the event fires at the exact time this crosses zero,
-     - `jump_fn` : `(t, y, args) -> y_new` -- applied exactly at that time,
+    - `jump_fn` : `(ts, y, args) -> y_new`, where `ts` contains all previous
+                event times and the current event time as its last element,
+                -- applied exactly at that time,
                    free to touch ANY part of the state (continuous or
                    discrete slots alike; e.g. reset a neuron's voltage AND
                    update synapse weights in the same jump),
@@ -81,7 +83,7 @@ DEFAULT_ROOT_FINDER = optx.Newton(rtol=1e-5, atol=1e-5, norm=optx.rms_norm, cauc
 
 FlowFn = Callable[[Any, jnp.ndarray, Any], jnp.ndarray]   # (t, y, args) -> dy
 CondFn = Callable[..., Any]                               # (t, y, args, **kwargs) -> scalar
-JumpFn = Callable[[Any, jnp.ndarray, Any], jnp.ndarray]   # (t, y, args) -> y_new
+JumpFn = Callable[[jnp.ndarray, jnp.ndarray, Any], jnp.ndarray]
 
 
 # TODO: uniform solution formats
@@ -113,7 +115,7 @@ def _as_step(system: Union[DynamicalSystem, JumpFn]) -> JumpFn:
     to apply a composite's discrete part (e.g. synapse updates) inside a jump."""
     if isinstance(system, DynamicalSystem):
         u0 = jnp.zeros((system.input_size,))
-        return lambda t, y, args: system.step(y, u0, args, t)
+        return lambda ts, y, args: system.step(y, u0, args, ts[-1])
     return system
 
 
@@ -173,6 +175,7 @@ def integrate_hybrid(
         finite = jnp.isfinite(seg_ts)          # diffrax pads unused save slots with NaN/inf
         seg_ts, seg_ys = seg_ts[finite], seg_ys[finite]
 
+        # TODO: change to conditionally drop based on saveat 
         ts_chunks.append(seg_ts[1:])          # drop the duplicated segment-start point
         ys_chunks.append(seg_ys[1:])
 
@@ -200,7 +203,10 @@ def integrate_hybrid(
             t, y = t_stop, y_stop
             break
 
-        y_jumped = jnp.asarray(jump_fn(t_stop, jnp.asarray(y_stop), args))
+        jump_times = jnp.asarray(
+            (event_times if event_times else [-np.inf]) + [t_stop]
+        )
+        y_jumped = jnp.asarray(jump_fn(jump_times, jnp.asarray(y_stop), args))
         event_times.append(t_stop)
         # Replace the pre-jump endpoint instead of adding a second sample at
         # the same time. The event time remains available separately.
@@ -291,6 +297,9 @@ def integrate_traj_hybrid_jit(
 
         def event_cond(inner_carry):
             t, _, idx, _, _ = inner_carry
+            # Careful: here n_intervals is used as a limit on the number of events
+            # It is not a problem, as having more events than timesteps makes the integration
+            # impossible within this framework
             return jnp.logical_and(t < interval_t1 - 1e-9, idx < n_intervals)
 
         def event_body(inner_carry):
@@ -307,7 +316,11 @@ def integrate_traj_hybrid_jit(
                 fired = sol.result == _EVENT_OCCURRED
             else:
                 fired = t_stop < interval_t1 - 1e-9
-            y_jumped = jnp.asarray(jump_fn(t_stop, y_stop, args))
+            jump_times = jnp.concatenate((
+                jnp.where(jnp.isfinite(times), times, -jnp.inf),
+                jnp.asarray([t_stop], dtype=times.dtype),
+            ))
+            y_jumped = jnp.asarray(jump_fn(jump_times, y_stop, args))
             next_state = jnp.where(fired, y_jumped, y_stop)
             next_times = jnp.where(fired, times.at[idx].set(t_stop), times)
             next_states = jnp.where(fired, states.at[idx].set(y_jumped), states)
@@ -395,8 +408,11 @@ def integrate_hybrid_jit(
             fired = sol.result == _EVENT_OCCURRED
         else:
             fired = t_stop < t1 - 1e-9
-
-        y_jumped = jnp.asarray(jump_fn(t_stop, jnp.asarray(y_stop), args))
+        jump_times = jnp.concatenate((
+            jnp.where(jnp.isfinite(ets), ets, -jnp.inf),
+            jnp.asarray([t_stop], dtype=ets.dtype),
+        ))
+        y_jumped = jnp.asarray(jump_fn(jump_times, jnp.asarray(y_stop), args))
         y_next = jnp.where(fired, y_jumped, y_stop)
         ets_next = jnp.where(fired, ets.at[idx].set(t_stop), ets)
         ess_next = jnp.where(fired, ess.at[idx].set(y_jumped), ess)
@@ -438,7 +454,7 @@ def make_spike_jump(
     threshold_arr = jnp.broadcast_to(jnp.asarray(threshold, dtype=jnp.float64), voltage_indices_arr.shape)
     v_reset_arr = jnp.broadcast_to(jnp.asarray(v_reset, dtype=jnp.float64), voltage_indices_arr.shape)
 
-    def jump_fn(t, y, args):
+    def jump_fn(ts, y, args):
         v = y[voltage_indices_arr]
         margins = threshold_arr - v
         spiked = jnp.logical_or(
@@ -447,7 +463,7 @@ def make_spike_jump(
         )
         y = y.at[voltage_indices_arr].set(jnp.where(spiked, v_reset_arr, v))
         if synapse_step_fn is not None:
-            y = synapse_step_fn(t, y, args)
+            y = synapse_step_fn(ts, y, args)
         return y
 
     return jump_fn

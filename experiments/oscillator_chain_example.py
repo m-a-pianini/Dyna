@@ -39,7 +39,7 @@ chain = connect(oscillators, edges, name="chain")
 # If we use the same list to build two different composite systems, they will share the EXACT same list object
 # This leads to bug (see below)
 chain2 = connect(oscillators, edges, name="chain2")
-print(chain2.subsystems == chain.subsystems)
+print(chain2.subsystems == chain.subsystems, chain2 == chain)
 
 # Check everything is as expected
 print(chain)                                  # state_size=10

@@ -27,7 +27,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import diffrax as dfx
-import optimistix as optx
 import matplotlib.pyplot as plt
 
 from dyna.dynsys import VarSpec, DynamicalSystem, connect
@@ -102,8 +101,9 @@ print("[1] PASS: jit-style output matches eager reference exactly")
 jitted = jax.jit(
     functools.partial(spiking_integrator_jit,
                        t0=T0, t1=T1, dt0=DT0, max_events=MAX_EVENTS),
-    static_argnames=("max_events",),
+    static_argnames=("max_events", "system"),
 )
+
 t_final_j, y_final_j, event_times_j, event_states_j, n_events_j = jitted(
     net, VOLTAGE_IDX, THRESHOLD, V_RESET, y0, net.default_params,
 )
@@ -132,8 +132,8 @@ print(f"[3] PASS: max_events={SMALL_BOUND} correctly truncates "
 # ---------------------------------------------------------------------
 batch_size = 6
 I_values = jnp.linspace(1.2, 3.0, batch_size)   # different drive current per neuron
-y0_batch = jnp.tile(y0, (batch_size, 1))
 
+# Sloppy way to do it, JAX has a more elegant way
 def run_one(I_value, y0_i):
     params_i = dict(net.default_params)
     params_i["neuron"] = dict(params_i["neuron"])
@@ -143,7 +143,7 @@ def run_one(I_value, y0_i):
         y0_i, params_i, T0, T1, DT0, max_events=MAX_EVENTS,
     )
 
-batched = jax.vmap(run_one, in_axes=(0, 0))(I_values, y0_batch)
+batched = jax.vmap(run_one, in_axes=(0, None))(I_values, y0)
 t_final_b, y_final_b, event_times_b, event_states_b, n_events_b = batched
 
 print("\n[4] batch results (drive current -> spike count, final synapse weight):")

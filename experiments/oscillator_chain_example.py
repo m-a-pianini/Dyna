@@ -8,6 +8,24 @@ from dyna.dynsys import VarSpec, DynamicalSystem, connect, make_clock
 from dyna.lyapunov import *
 
 
+def make_oscillator2d(name, drive_amp=0.0, drive_omega=1.0, k=1.0, c=0.2, m=1.0):
+    def fn(x, u=jnp.zeros(2), params = {}, t=0):
+        pos_x, pos_y, vel_x, vel_y = x[0], x[1], x[2], x[3]
+        force_x = params.get("drive_amp", drive_amp) * jnp.sin(params.get("drive_omega", drive_omega) * t)
+        force_y = params.get("drive_amp", drive_amp) * jnp.cos(params.get("drive_omega", drive_omega) * t)
+
+        dpos_x, dpos_y = vel_x, vel_y
+        dvel_x = (-params.get("k", k) * (pos_x - u[0]) - params.get("c", c) * vel_x + force_x) / params.get("m", m)
+        dvel_y = (-params.get("k", k) * (pos_y - u[1]) - params.get("c", c) * vel_y + force_y) / params.get("m", m)
+        return jnp.stack([dpos_x, dpos_y, dvel_x, dvel_y])
+
+    return DynamicalSystem(
+        name, [VarSpec("pos_x"), VarSpec("pos_y"), VarSpec("vel", 2)], fn,
+        input_vars=[VarSpec("coupling_in_x"), VarSpec("coupling_in_y")], outputs=["pos_x", "pos_y"],
+        params={"k": k, "c": c, "m": m, "drive_amp": drive_amp, "drive_omega": drive_omega},
+        domain="continuous",
+    )
+
 def make_oscillator(name, drive_amp=0.0, drive_omega=1.0, k=1.0, c=0.2, m=1.0):
     def fn(x, u=jnp.zeros(1), params = {}, t=0):
         pos, vel = x[0], x[1]
@@ -24,14 +42,19 @@ def make_oscillator(name, drive_amp=0.0, drive_omega=1.0, k=1.0, c=0.2, m=1.0):
     )
 
 #Number of oscillators
-N = 5
+N = 3
 
  # osc0, osc2, osc4 get an oscillating drive
-driven = {0, 2, 4}
+driven = {0, 2}
 
-oscillators = [make_oscillator(f"osc{i}", drive_amp=1.0 if i in driven else 0.0) for i in range(N)]
+oscillators = [make_oscillator2d(f"osc{i}", drive_amp=1.0 if i in driven else 0.0) for i in range(N)]
 
-edges = [(f"osc{i}", "pos", f"osc{(i+1)}", "coupling_in") for i in range(N-1)]  # each feeds the next with loop
+#edges = [(f"osc{i}", "pos", f"osc{(i+1)}", "coupling_in") for i in range(N-1)]  # each feeds the next with loop
+
+edges_x = [(f"osc{i}", "pos_x", f"osc{(i+1)}", "coupling_in_x") for i in range(N-1)]
+edges_y = [(f"osc{i}", "pos_y", f"osc{(i+1)}", "coupling_in_y") for i in range(N-1)]
+edges = edges_x + edges_y
+
 chain = connect(oscillators, edges, name="chain")
 
 
@@ -49,7 +72,10 @@ print([v.name for v in chain.input_vars])     # empty because loop connection
 # Notice the difference: outputs attribute is a list of strings, while input_vars is a list of Vars
 print((chain2.name, chain2.outputs[0], chain.name, chain.input_vars[0].name))
 full_links = [(chain2.name, chain2.outputs[0], chain.name, chain.input_vars[0].name),
-              (chain.name, chain.outputs[0], chain2.name, chain2.input_vars[0].name)]
+              (chain.name, chain.outputs[0], chain2.name, chain2.input_vars[0].name),
+              (chain.name, chain.outputs[1], chain2.name, chain2.input_vars[1].name),
+              (chain2.name, chain2.outputs[1], chain.name, chain.input_vars[1].name)
+              ]
 full_chain = connect([chain, chain2], full_links, name="full_chain")
 print(full_chain)
 print(full_chain.flatten_params())
@@ -61,7 +87,7 @@ pars = full_chain.flatten_params()
 # It stays identical down to EVERY single object, even when storing the attribute value in an external variable
 # It is not (arguably) an interface problem, it's a Python problem
 # Could be fixed by making deep copies of all the init variables of the single objects
-pars["chain2.osc4"]["drive_omega"] = 3
+pars["chain2.osc2"]["drive_omega"] = 3
 print(pars)
 
 # We now update the params of the object

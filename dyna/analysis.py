@@ -1,10 +1,13 @@
-from typing import Callable
+from typing import Callable, Any
 from functools import partial
+
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.optimize import brute, root
 import jax
 import jax.numpy as jnp
+import equinox as eqx
+import optimistix as optx
 jax.config.update("jax_enable_x64", True)
 
 
@@ -132,7 +135,7 @@ def boxcount_plot(
 # =============================================
 
 # Find stationary points of a function
-def find_stationary(func: Callable, seq, perc=5, tolerance=0, ):
+def find_stationary(func: Callable, seq, solver=optx.Newton(rtol=1e-10, atol=1e-10), perc=5,):
     """
     Evaluates the function on the seq points and searches for roots from the top perc% candidates
     that scores nearest to zero\n 
@@ -155,15 +158,35 @@ def find_stationary(func: Callable, seq, perc=5, tolerance=0, ):
     top.reshape(-1, seq.shape[-1])
     sols = []
     vals = []
-    # Probably not necessary, but
-    # TODO: make this a jax.lax.scan
+
+    # TODO: use separate routine below
     for x0 in np.array(top):
-        result = root(func, x0)
-        sols.append(result.x)
-        vals.append(result.fun)
+        sol = optx.root_find(
+            func,
+            solver=solver,
+            y0=x0,
+            args=None,
+        )
+
+        sols.append(sol.value)
+        vals.append(func(sol.value))
+
+    # TODO: the implementation below needs jittable logic above
+    #sols, vals = jax.jit(jax.vmap(root_finder, in_axes=0), static_argnames=("func", "solver"))(top)
 
     return top, top_val, jnp.array(sols), jnp.array(vals)
 
+
+def root_finder(func: Callable[[jnp.ndarray, Any], jnp.ndarray], y0, solver=optx.Newton(rtol=1e-10, atol=1e-10)):
+    sol = optx.root_find(
+        func,
+        solver=solver,
+        y0=y0,
+        args=None,
+    )
+
+    root = sol.value
+    return root, func(root)
 
 # TODO: jacobian analyzer flows/maps: trace, det, eigenvalues varying the parameters
 # TODO: bifurcation diagram of a flow/map: 
@@ -398,4 +421,4 @@ if __name__ == "__main__":
                         jnp.array([jnp.linspace(-jnp.pi*3/2, -jnp.pi/2, 20), jnp.full(20, -2.75)]).T,
                                     ])
     print(flurry.shape)
-    print(find_stationary(lambda x: samelson_flow(0, x), flurry))
+    print(find_stationary(lambda x, args=None: samelson_flow(0, x), flurry))

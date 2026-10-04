@@ -980,12 +980,12 @@ def make_clock(name: str = "clock", rate: float = 1.0, domain: Domain = "continu
     Useful when several composed subsystems should share one common clock.
     """
     is_continuous = domain == "continuous"
- 
+
     def fn(x, u, p, t):
         if is_continuous:
             return jnp.ones((1,), dtype=x.dtype) * p["rate"]
         return x + p["rate"]
- 
+
     return DynamicalSystem(
         name=name,
         state_vars=[VarSpec("tau")],
@@ -993,7 +993,7 @@ def make_clock(name: str = "clock", rate: float = 1.0, domain: Domain = "continu
         params={"rate": rate},
         domain=domain,
         fn=fn,
-    ) 
+    )
 
 
 if __name__ == "__main__":

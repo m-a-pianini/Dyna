@@ -34,7 +34,6 @@ jax.config.update("jax_enable_x64", True)
 # --------------------------------------------------------------------------
 # Reference-interval quantities (independent of f and of the mesh)
 # --------------------------------------------------------------------------
-# TODO: convert this to jax routine
 def collocation_matrices(m):
     """
     On the reference interval [0,1] with equidistant nodes s_k = k/m:
@@ -44,12 +43,12 @@ def collocation_matrices(m):
     """
     nodes = np.arange(m + 1) / m
     x, _ = leggauss(m)
-    gauss = 0.5 * (x + 1.0)
+    gauss = 0.5 * (x + 1.0)     # Interval [0, 1]
     D = np.zeros((m, m + 1))
     w = np.zeros(m + 1)
     for k in range(m + 1):
         others = np.delete(nodes, k)
-        coef = P.polyfromroots(others)
+        coef = P.polyfromroots(others)      # From a set of roots generate the coefficients of the monic poly
         coef = coef / np.prod(nodes[k] - others)      # l_k(s) in monomial basis
         D[:, k] = P.polyval(gauss, P.polyder(coef))
         w[k] = P.polyval(1.0, P.polyint(coef)) - P.polyval(0.0, P.polyint(coef))
@@ -94,6 +93,8 @@ class LimitCycleCollocation:
 
     # ----- residual ------------------------------------------------------
     def residual(self, z, vdot):
+        # System of equations 10.22, 24, 25 and continuity
+        # To be fed to the newton solver
         U, T = self.unpack(z)
         # u^(j)(zeta_{j,i}) and derivative wrt tau:  (1/h_j) sum_k D[i,k] u_{j,k}
         Uz = jnp.einsum("ik,jkn->jin", self.W_interp, U)      # values at Gauss pts
@@ -132,6 +133,7 @@ class LimitCycleCollocation:
         U = jnp.asarray(u_of_tau(self.tau))
         return self.pack(U, T)
 
+    # TODO: should use integrator step from integrators
     def guess_from_integration(self, u0, T, steps_per_interval=200):
         """Integrate du/dt=f(u) from u0 over time T (RK4) and sample at mesh."""
         f = self.f
@@ -156,6 +158,7 @@ class LimitCycleCollocation:
         return self.pack(U, T)
 
     # ----- Newton --------------------------------------------------------
+    # TODO: should be function from analysis/other module
     def solve(self, z0, tol=1e-11, maxit=50, verbose=True, update_phase_ref=False):
         z = jnp.asarray(z0)
         U, T = self.unpack(z)
@@ -167,6 +170,7 @@ class LimitCycleCollocation:
                 print(f"  Newton {it:2d}: |res|_inf = {nr:.3e}   T = {float(z[-1]):.10f}")
             if nr < tol:
                 break
+            # Solving method
             dz = jnp.linalg.solve(J, -r)
             z = z + dz
             if update_phase_ref:
@@ -199,6 +203,7 @@ class LimitCycleCollocation:
         taus.append([1.0]); us.append(U[-1, -1][None, :])
         return np.concatenate(taus), np.vstack(us)
 
+    # TODO: should be function from lyapubov module
     def floquet_multipliers(self, z):
         """Monodromy matrix via variational equation (RK4), for stability."""
         U, T = self.unpack(z)
@@ -227,22 +232,22 @@ class LimitCycleCollocation:
 # Demo
 # --------------------------------------------------------------------------
 if __name__ == "__main__":
-    # Van der Pol oscillator  x' = y,  y' = mu (1 - x^2) y - x
+    from dyna.flows import hodgkin_huxley, van_der_pol, hopf
     mu = 1.0
 
-    def vdp(u):
-        x, y = u
-        return jnp.array([y, mu * (1.0 - x * x) * y - x])
-
-    lc = LimitCycleCollocation(vdp, n=2, N=20, m=4)
+    lc = LimitCycleCollocation(lambda u: hodgkin_huxley(u, I_ext=15), n=4, N=50, m=10)
 
     # crude guess: circle of radius 2, period 2*pi, refined by integration
-    z0 = lc.guess_from_function(
+    """    z0 = lc.guess_from_function(
         lambda tau: jnp.stack([2 * jnp.cos(2 * jnp.pi * tau),
                                -2 * jnp.sin(2 * jnp.pi * tau)], axis=-1),
         T=6.5)
-    print("Van der Pol, mu =", mu)
-    z = lc.solve(z0)
+    print("Van der Pol, mu =", mu)"""
+
+    z0_hh = lc.guess_from_integration(u0=jnp.stack([-74, 0.03, 0.125, 0.68]), T=0.012, steps_per_interval=200)
+    print(z0_hh.shape, z0_hh)
+
+    z = lc.solve(z0_hh, tol=1e-8)
     U, T = lc.solution(z)
     print(f"\nPeriod T = {T:.10f}   (literature: 6.6632868593 for mu=1)")
     print("Floquet multipliers:", lc.floquet_multipliers(z),
@@ -268,10 +273,10 @@ if __name__ == "__main__":
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        z = lc.solve(z0=lc.guess_from_integration(jnp.array([2.0, 0.0]), 6.7), verbose=False)
+        z = lc.solve(z0=z0_hh, tol=1e-8, verbose=False)
         _, u = lc.evaluate(z)
         plt.plot(u[:, 0], u[:, 1]); plt.xlabel("x"); plt.ylabel("y")
-        plt.title("Van der Pol limit cycle"); plt.savefig("limit_cycle.png", dpi=120)
+        plt.title("Limit cycle"); plt.savefig("limit_cycle.png", dpi=120)
         print("saved limit_cycle.png")
     except ImportError:
         pass

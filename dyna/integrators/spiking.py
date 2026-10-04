@@ -5,7 +5,7 @@ import jax.numpy as jnp
 
 from dyna.dynsys import DynamicalSystem
 
-from .base import CondFn, JumpFn, HybridSolution, _as_step, integrate_hybrid, integrate_hybrid_jit, integrate_traj_hybrid_jit
+from .event import CondFn, JumpFn, HybridSolution, _as_step, integrate_hybrid, integrate_hybrid_jit, integrate_traj_hybrid_jit
 
 # --------------------------------------------------------------------------
 # Common recipe: spiking-neuron voltage threshold/reset + discrete synapses

@@ -1,5 +1,5 @@
 """
-integrators.py
+event.py
 ===============
 
 Event-driven integration for hybrid (continuous + discrete) DynamicalSystems

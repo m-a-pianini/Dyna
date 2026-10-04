@@ -1,8 +1,8 @@
-from . import base
+from . import event
 from . import spiking
 
 
-from .base import (
+from .event import (
     integrate_hybrid,
     integrate_traj_hybrid_jit,
     integrate_hybrid_jit,
@@ -19,7 +19,7 @@ from .spiking import (
 
 
 __all__ = [
-    "base",
+    "event",
     "spiking",
 
     "integrate_hybrid",

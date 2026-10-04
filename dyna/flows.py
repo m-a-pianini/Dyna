@@ -131,7 +131,87 @@ def duffing(t, z, params):
     dy = -a*y -d*x - c*x*x*x + b*jnp.cos(w*t)
     return jnp.array([dx, dy])
 
-# Visualization utils
+def hopf(u):
+    # Hopf normal form: r' = r(1 - r^2), theta' = 1  -> circle r=1, T = 2 pi
+    x, y = u
+    r2 = x * x + y * y
+    return jnp.array([x * (1 - r2) - y, y * (1 - r2) + x])
+
+def van_der_pol(u, mu):
+    # Van der Pol oscillator  x' = y,  y' = mu (1 - x^2) y - x
+    x, y = u
+    return jnp.array([y, mu * (1.0 - x * x) * y - x])
+
+def hodgkin_huxley(
+    x,
+    I_ext=0.0,
+    C_m=1.0,
+    g_Na=120.0,
+    g_K=36.0,
+    g_L=0.3,
+    E_Na=50.0,
+    E_K=-77.0,
+    E_L=-54.387,
+):
+    """
+    Hodgkin-Huxley vector field.
+
+    Parameters
+    ----------
+    x : array_like, shape (..., 4)
+        State [V, m, h, n].
+        V in mV, gating variables dimensionless.
+
+    I_ext : float
+        External current in uA/cm^2.
+
+    C_m : float
+        Membrane capacitance in uF/cm^2.
+
+    g_Na, g_K, g_L : float
+        Maximum conductances in mS/cm^2.
+
+    E_Na, E_K, E_L : float
+        Reversal potentials in mV.
+
+    Returns
+    -------
+    dxdt : jax.Array, shape (..., 4)
+        [dV/dt, dm/dt, dh/dt, dn/dt].
+        Time in milliseconds.
+    """
+
+    V, m, h, n = jnp.moveaxis(jnp.asarray(x), -1, 0)
+
+    # Gating rates
+    alpha_m = 0.1 * (V + 40.0) / (
+        -jnp.expm1(-(V + 40.0) / 10.0)
+    )
+    beta_m = 4.0 * jnp.exp(-(V + 65.0) / 18.0)
+
+    alpha_h = 0.07 * jnp.exp(-(V + 65.0) / 20.0)
+    beta_h = 1.0 / (
+        1.0 + jnp.exp(-(V + 35.0) / 10.0)
+    )
+
+    alpha_n = 0.01 * (V + 55.0) / (
+        -jnp.expm1(-(V + 55.0) / 10.0)
+    )
+    beta_n = 0.125 * jnp.exp(-(V + 65.0) / 80.0)
+
+    # Ionic currents
+    I_Na = g_Na * m**3 * h * (V - E_Na)
+    I_K = g_K * n**4 * (V - E_K)
+    I_L = g_L * (V - E_L)
+
+    # Vector field
+    dV = (I_ext - I_Na - I_K - I_L) / C_m
+    dm = alpha_m * (1.0 - m) - beta_m * m
+    dh = alpha_h * (1.0 - h) - beta_h * h
+    dn = alpha_n * (1.0 - n) - beta_n * n
+
+    return jnp.stack([dV, dm, dh, dn], axis=-1)*1000
+
 
 if __name__ == "__main__":
     from dyna.analysis import phase_portrait_2d

@@ -1,5 +1,3 @@
-
-
 from dyna.dynsys import VarSpec, DynamicalSystem, connect
 
 def izhikevich_neuron(name="", suffix="", a=None, b=None, pars=None):

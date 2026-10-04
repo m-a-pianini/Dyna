@@ -25,22 +25,25 @@ def trajectory_plot(x, y, save=None):
         plt.savefig(save)
     plt.show()
 
+# TODO: deprecate
 def phase_portrait_2d(X, Y, U , V, density = 2):
-    plt.figure(figsize=(8,4))
+    fig = plt.figure(figsize=(8,4))
     plt.streamplot(x=X, y=Y, u=U, v=V, density=density)
     plt.xlabel("x")
     plt.ylabel("y")
-    plt.title("Particle trajectory in the Bickley jet")
+    plt.title("Particle trajectory in the vector field")
     plt.grid(True)
     plt.show()
+    return fig
 
+# TODO: axis option to wrap
 def poincare_sos(data: np.ndarray | None = None, section_val: float = 0, tol: float = 1e-6,
                      wrap_period: float | None = None, center: float = 0) -> np.ndarray:
     """Extract points near a Poincaré section defined by a coordinate index (zero crossing not implemented).
 
     This simple helper collects states where coordinate at section_index is near zero (within tol).
 
-    data should have shape (n,)
+    data should have shape (n,)?
     """
     if wrap_period is not None:
         wrapped = (data - center + wrap_period / 2) % wrap_period + center - wrap_period / 2
@@ -51,6 +54,7 @@ def poincare_sos(data: np.ndarray | None = None, section_val: float = 0, tol: fl
 
     return data[idxes], idxes
 
+# TODO: use routine above?
 def plot_wrapped(
     x: np.ndarray,
     y: np.ndarray,
@@ -135,7 +139,7 @@ def boxcount_plot(
 # =============================================
 
 # Find stationary points of a function
-def find_stationary(func: Callable, seq, solver=optx.Newton(rtol=1e-10, atol=1e-10), perc=5,):
+def find_stationary(func: Callable, guesses, solver=optx.Newton(rtol=1e-10, atol=1e-10), perc=5,):
     """
     Evaluates the function on the seq points and searches for roots from the top perc% candidates
     that scores nearest to zero\n 
@@ -143,19 +147,19 @@ def find_stationary(func: Callable, seq, solver=optx.Newton(rtol=1e-10, atol=1e-
 
     """
     # First, calculate the squared norm of the function on the seq to find root candidates
-    last_dim = seq.shape[-1]
-    batch_f = jax.jit(jax.vmap(func, in_axes=0))
-    squared_norm = jnp.linalg.norm(batch_f(seq), axis=-1)
+    last_dim = guesses.shape[-1]
+    batch_f = jax.vmap(func, in_axes=0)
+    squared_norm = jnp.linalg.norm(batch_f(guesses), axis=-1)
     # Calculate top p percentile (lowest squared norm)
     threshold = jnp.percentile(a=squared_norm, q=perc, axis=-1,)
     idx = jnp.argwhere(squared_norm <= threshold)
 
-    top = jnp.take_along_axis(seq, idx, axis=0) # top scorers
+    top = jnp.take_along_axis(guesses, idx, axis=0) # top scorers
     top_val = squared_norm[idx] # top values
     print(f"{perc}-percentile ({top.shape[0]}) of squared norms of the function: {threshold:.4f}")
 
     # Then, search for a root near those values
-    top.reshape(-1, seq.shape[-1])
+    top.reshape(-1, guesses.shape[-1])
     sols = []
     vals = []
 
@@ -236,7 +240,7 @@ def kaplan_yorke_dim(lyaps: jnp.ndarray):
 
     return dim
 
-def count_boxes(trajectory: np.ndarray, box_size: float) -> int:
+def _count_boxes(trajectory: np.ndarray, box_size: float) -> int:
     """
     Count the number of boxes of given size needed to cover the trajectory.
 
@@ -251,7 +255,7 @@ def count_boxes(trajectory: np.ndarray, box_size: float) -> int:
     unique_boxes = np.unique(box_indices, axis=0)
     return len(unique_boxes)
 
-def find_linear_region(x: np.ndarray, y: np.ndarray, 
+def _find_linear_region(x: np.ndarray, y: np.ndarray, 
                        min_points: int = 5,
                        r2_threshold: float = 0.999) -> tuple[int, int]:
     """
@@ -343,7 +347,7 @@ def boxcount_dimension(
 
     trajectory_shifted = trajectory - mins
 
-    counts = np.array([count_boxes(trajectory_shifted, s) for s in box_sizes])
+    counts = np.array([_count_boxes(trajectory_shifted, s) for s in box_sizes])
 
     # Work in log space
     valid = counts > 0
@@ -354,7 +358,7 @@ def boxcount_dimension(
     log_counts    = np.log(valid_counts)
 
     # Detect and fit only the linear region
-    lin_start, lin_end = find_linear_region(log_inv_sizes, log_counts, min_points)
+    lin_start, lin_end = _find_linear_region(log_inv_sizes, log_counts, min_points)
     coeffs = np.polyfit(
         log_inv_sizes[lin_start:lin_end + 1],
         log_counts[lin_start:lin_end + 1],
@@ -415,7 +419,7 @@ def correlation_dimension(
 
 
 if __name__ == "__main__":
-    from flows import samelson_flow
+    from dyna.flows import samelson_flow
     flurry = jnp.concat([jnp.array([jnp.linspace(-jnp.pi, jnp.pi, 20), jnp.zeros(20)]).T,
                         jnp.array([jnp.linspace(-jnp.pi/2, jnp.pi/2, 20), jnp.full(20, 2.75)]).T,
                         jnp.array([jnp.linspace(-jnp.pi*3/2, -jnp.pi/2, 20), jnp.full(20, -2.75)]).T,

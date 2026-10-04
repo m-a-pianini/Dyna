@@ -134,7 +134,7 @@ def duffing(t, z, params):
 # Visualization utils
 
 if __name__ == "__main__":
-    from analysis import phase_portrait_2d
+    from dyna.analysis import phase_portrait_2d
     # Test plot to see if the map is correct
     # it is :,)
     samelsons_pars = {

@@ -35,7 +35,7 @@ if __name__ == "__main__":
     import diffrax as dfx
     import matplotlib.pyplot as plt
 
-    from dyna.integrators.integrators import spiking_integrator, spiking_integrator_jit, spiking_integrator_jit_trajectory
+    from dyna.integrators import spiking_integrator, spiking_integrator_jit, spiking_integrator_jit_trajectory
 
     par = pars={"a": 2, "b": 3}
     iz_neu = izhikevich_neuron(a=1, b=1, pars=par)

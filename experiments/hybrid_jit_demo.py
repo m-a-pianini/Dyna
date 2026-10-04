@@ -30,7 +30,7 @@ import diffrax as dfx
 import matplotlib.pyplot as plt
 
 from dyna.dynsys import VarSpec, DynamicalSystem, connect
-from dyna.integrators.integrators import spiking_integrator, spiking_integrator_jit, spiking_integrator_jit_trajectory
+from dyna.integrators import spiking_integrator, spiking_integrator_jit, spiking_integrator_jit_trajectory
 
 
 # ---- the same LIF-style neuron + discrete synapse weight as hybrid_demo.py ----

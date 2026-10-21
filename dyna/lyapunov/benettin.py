@@ -158,30 +158,33 @@ def flow_spectrum(
     "Returns the lyapunov exponents extimate by iteration via Benettin algorithm with QR orthogonalization"
 
     z_dim = z0.shape[0]
+    # dt only controls the step size
     dt = (t1 - t0)/qr_every/n_intervals
+    # Interval is the total time integrated between QR steps
     interval = qr_every*dt
 
     if jacobian:
         jacob = jax.jacfwd(lambda z, t: flow(t, z, params))
 
-    def augmented_rhs(t, state, args):
-        
-        z = state[:z_dim]
-        Q = state[z_dim:].reshape((z_dim, z_dim))
+        def augmented_rhs(t, state, params):
+            z = state[:z_dim]
+            Q = state[z_dim:].reshape(z_dim, z_dim)
 
-        f = flow(t, z, params)
+            f = flow(t, z, params)
+            dQ = jacob(z, t) @ Q
+            return jnp.concatenate([f, dQ.ravel()])
 
-        if jacobian:
-            J = jacob(z, t)
-            dQ = J @ Q
-        else:
-            def jvp_column(v):
-                _, Jv = jax.jvp(lambda z: flow(t, z, params), (z,), (v,))
-                return Jv
+    else:
+        def augmented_rhs(t, state, params):
+            z = state[:z_dim]
+            Q = state[z_dim:].reshape(z_dim, z_dim)
 
-            dQ = jax.vmap(jvp_column)(Q.T).T
+            # One forward pass gives f(z) AND a reusable linear map v -> J(z) v
+            f, jvp_fn = jax.linearize(lambda z_: flow(t, z_, params), z)
 
-        return jnp.concatenate([f, dQ.reshape(-1)])
+            # Apply J to every column of Q at once (no transposes needed since in/out axes = 1)
+            dQ = jax.vmap(jvp_fn, in_axes=1, out_axes=1)(Q)
+            return jnp.concatenate([f, dQ.ravel()])
 
     term = dfx.ODETerm(augmented_rhs)
 
@@ -224,7 +227,7 @@ def flow_spectrum(
         current_time = (k + 1) * interval
         lam_est = lyap / current_time
 
-        seq = jnp.array([sol[:, :z_dim], jnp.full_like(sol[:, :z_dim], lam_est),  jnp.repeat(ts[..., jnp.newaxis], z_dim, axis=-1)])
+        seq = (sol[:, :z_dim], lam_est,  ts)
 
         return (state, t + interval, lyap), seq
 
@@ -233,29 +236,22 @@ def flow_spectrum(
     state0 = jnp.concatenate([z0, Q0.reshape(-1)])
     carry0 = (state0, t0, jnp.zeros(z_dim))
     k0 = jnp.arange(burn_in)
-    carry, ser0 = jax.lax.scan(step, carry0, k0, length=burn_in)
+    carry, (sol0, _, ts0) = jax.lax.scan(step, carry0, k0, length=burn_in)
     state_follow, t_follow, lyap = carry
 
     # Follow up
     remaining = n_intervals - burn_in
     ks = jnp.arange(remaining)
     carry_follow = (state_follow, t_follow, jnp.zeros(z_dim))
-    carry, ser = jax.lax.scan(step, carry_follow, ks, length=remaining)
-
-    state, t, lyap = carry
-
-    total_time = interval * remaining
+    carry, (sol1, lyap_ext, ts1) = jax.lax.scan(step, carry_follow, ks, length=remaining)
     
-    # Zeroth axis: iteration
-    # First axis: traj vs lyapunov vs time
-    # Second axis: iteration time step
-    # Third axis: dimension
-    traj = jnp.concat([ser0[:, 0, ...], ser[:, 0, ...]])
+    # Zeroth axis: scan iteration
+    # First axis: batch step iteration
+    # Second axis: dimension
+    traj = jnp.concat([sol0, sol1])
     traj = jnp.concat(traj)
 
-    lyap_ext = ser[:, 1, 0, ...]
-
-    times = jnp.concat([ser0[:, 2, ...,0], ser[:, 2, ..., 0]])
+    times = jnp.concat([ts0, ts1])
     times = jnp.concat(times)
     return traj, lyap_ext, times
 
@@ -454,7 +450,8 @@ def batch_fast_flow_spectrum(flow, solver, dt, n_intervals, stepsize, burn_in, j
 
 # Musing and doubts:
 # 1. is flow_spectrum recompiling his step function every vmap iteraton?
-# 2. is it faster/possible to integrate separately the trajectory and the tangent dynamic?
+# 2. is it faster/possible to integrate separately the trajectory and the tangent dynamic? 
+# Yes if we save the timesteps and use constant stepsize (e.g. we have the exact same state points of the integration)
 # 3. 
 
 

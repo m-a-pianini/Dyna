@@ -69,6 +69,7 @@ def saltation_matrix(
     x_plus = jnp.asarray(jump_fn(t, x_minus, args))
     f_plus = jnp.asarray(flow(t, x_plus, args))
 
+    # TODO: substitute with jvp to not materialize the full jacobian (can be big)
     DR = jax.jacfwd(lambda x: jnp.asarray(jump_fn(t, x, args)))(x_minus)
     dg = jax.grad(lambda x: jnp.asarray(cond_fn(t, x, args)))(x_minus)
 

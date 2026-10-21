@@ -47,10 +47,15 @@ def collocation_matrices(m):
     D = np.zeros((m, m + 1))
     w = np.zeros(m + 1)
     for k in range(m + 1):
+        # k != other index
         others = np.delete(nodes, k)
-        coef = P.polyfromroots(others)      # From a set of roots generate the coefficients of the monic poly
-        coef = coef / np.prod(nodes[k] - others)      # l_k(s) in monomial basis
+        # numerator of legendre polynomial (product of roots)
+        coef = P.polyfromroots(others)
+        # Denominator (product of the differences) (it then gets rescaled)
+        coef = coef / np.prod(nodes[k] - others)
         D[:, k] = P.polyval(gauss, P.polyder(coef))
+        # Quadratures coefficients for the mesh (equispaced)
+        # TODO: use the barycentric formulas for l_k and l_k′, which are stable for any node set
         w[k] = P.polyval(1.0, P.polyint(coef)) - P.polyval(0.0, P.polyint(coef))
     return gauss, D, w, nodes
 
@@ -80,7 +85,6 @@ class LimitCycleCollocation:
         self.tau = self.mesh[:-1, None] + h[:, None] * nodes[None, :]
         self.zeta = self.mesh[:-1, None] + h[:, None] * gauss[None, :]
         self._fv = jax.vmap(jax.vmap(f))                # (N,m+1,n)->(N,m+1,n)
-        self._fz = jax.vmap(jax.vmap(f))
         self._newton_pieces = jax.jit(self._residual_and_jac)
 
     # ----- packing -------------------------------------------------------
@@ -97,12 +101,15 @@ class LimitCycleCollocation:
         # To be fed to the newton solver
         U, T = self.unpack(z)
         # u^(j)(zeta_{j,i}) and derivative wrt tau:  (1/h_j) sum_k D[i,k] u_{j,k}
+        # U has shape (N, m+1, n), for the expansion we sum over the second index (the subinterval)
         Uz = jnp.einsum("ik,jkn->jin", self.W_interp, U)      # values at Gauss pts
+        # Same here, but for the side with the derivative
         dU = jnp.einsum("ik,jkn->jin", self.D, U) / self.h[:, None, None]
         F = jax.vmap(jax.vmap(self.f))(Uz)
-        coll = (dU - T * F).ravel()                           # (22)
+        coll = (dU - T * F).ravel()                           # (22) System equation
+        # TODO: Bad!! To remove!!
         cont = (U[:-1, -1, :] - U[1:, 0, :]).ravel()          # continuity
-        per = U[-1, -1, :] - U[0, 0, :]                       # (24)
+        per = U[-1, -1, :] - U[0, 0, :]                       # (24) Periodicity
         # (25): sum_j h_j sum_i w_i <u_ji, vdot_ji>
         phase = jnp.einsum("j,i,jin,jin->", self.h, self.w, U, vdot)
         return jnp.concatenate([coll, cont, per, jnp.atleast_1d(phase)])
@@ -123,14 +130,15 @@ class LimitCycleCollocation:
         return self._W
 
     def _residual_and_jac(self, z, vdot):
+        # TODO: optimize with jax.linearize
         r = self.residual(z, vdot)
         J = jax.jacfwd(self.residual)(z, vdot)
         return r, J
 
     # ----- initial guess helpers ----------------------------------------
-    def guess_from_function(self, u_of_tau, T):
-        """u_of_tau: callable tau-array(N,m+1) -> states (N,m+1,n)."""
-        U = jnp.asarray(u_of_tau(self.tau))
+    def guess_from_function(self, u, T):
+        """u: callable tau-array(N,m+1) -> states (N,m+1,n)."""
+        U = jnp.asarray(u(self.tau))
         return self.pack(U, T)
 
     # TODO: should use integrator step from integrators
@@ -159,7 +167,7 @@ class LimitCycleCollocation:
 
     # ----- Newton --------------------------------------------------------
     # TODO: should be function from analysis/other module
-    def solve(self, z0, tol=1e-11, maxit=50, verbose=True, update_phase_ref=False):
+    def solve(self, z0, tol=1e-6, maxit=50, verbose=True, update_phase_ref=False):
         z = jnp.asarray(z0)
         U, T = self.unpack(z)
         vdot = jax.vmap(jax.vmap(self.f))(U)       # reference derivative
@@ -203,9 +211,9 @@ class LimitCycleCollocation:
         taus.append([1.0]); us.append(U[-1, -1][None, :])
         return np.concatenate(taus), np.vstack(us)
 
-    # TODO: should be function from lyapubov module
+    # TODO: should be function from lyapunov module
     def floquet_multipliers(self, z):
-        """Monodromy matrix via variational equation (RK4), for stability."""
+        """Monodromy matrix via variational equation (RK4)."""
         U, T = self.unpack(z)
         f = self.f
         u0 = U[0, 0]
@@ -235,7 +243,7 @@ if __name__ == "__main__":
     from dyna.flows import hodgkin_huxley, van_der_pol, hopf
     mu = 1.0
 
-    lc = LimitCycleCollocation(lambda u: hodgkin_huxley(u, I_ext=15), n=4, N=50, m=10)
+    lc = LimitCycleCollocation(lambda u: hodgkin_huxley(u, I_ext=15), n=4, N=50, m=4)
 
     # crude guess: circle of radius 2, period 2*pi, refined by integration
     """    z0 = lc.guess_from_function(
@@ -247,7 +255,7 @@ if __name__ == "__main__":
     z0_hh = lc.guess_from_integration(u0=jnp.stack([-74, 0.03, 0.125, 0.68]), T=0.012, steps_per_interval=200)
     print(z0_hh.shape, z0_hh)
 
-    z = lc.solve(z0_hh, tol=1e-8)
+    z = lc.solve(z0_hh, tol=1e-6)
     U, T = lc.solution(z)
     print(f"\nPeriod T = {T:.10f}   (literature: 6.6632868593 for mu=1)")
     print("Floquet multipliers:", lc.floquet_multipliers(z),

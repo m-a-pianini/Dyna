@@ -71,9 +71,9 @@ print([v.name for v in chain.input_vars])     # empty because loop connection
 # Compose the composite system
 # Notice the difference: outputs attribute is a list of strings, while input_vars is a list of Vars
 print((chain2.name, chain2.outputs[0], chain.name, chain.input_vars[0].name))
-full_links = [(chain2.name, chain2.outputs[0], chain.name, chain.input_vars[0].name),
-              (chain.name, chain.outputs[0], chain2.name, chain2.input_vars[0].name),
-              (chain.name, chain.outputs[1], chain2.name, chain2.input_vars[1].name),
+full_links = [(chain2.name, chain2.outputs[0], chain.name, chain.input_vars[0].name), # x2 -> input_x1
+              (chain.name, chain.outputs[0], chain2.name, chain2.input_vars[0].name), # close loop: x1 -> input_x2
+              (chain.name, chain.outputs[1], chain2.name, chain2.input_vars[1].name), # same for y
               (chain2.name, chain2.outputs[1], chain.name, chain.input_vars[1].name)
               ]
 full_chain = connect([chain, chain2], full_links, name="full_chain")
@@ -102,9 +102,10 @@ osc_jittedfn = jax.jit(lambda t, x, pars=None: full_chain(x=x, t=t, p=pars))
 
 print(osc_jittedfn(0.5, z0))
 
-# Lets try the autonomize
+# Promote time to variable (canonize)
 # NOTE: the lyapunov spectrum estimation can slow down quite a lot 
 # This is probably due to the bad scaling in the number of dimensions of the system
+# Now the time is the first variable
 clock = make_clock("clock")
 canon_chain = full_chain.autonomize(name= "canon_chain", clock=clock)
 
@@ -122,7 +123,7 @@ steps = 50
 n_inters = int(Tot_iters/steps) # Unelegantly, this has to be done outside the main function
 burns = int(n_inters*0.2)
 
-timesteps = jnp.linspace(0, Tot_T/n_inters, steps-1)
+timesteps = jnp.linspace(0, Tot_T/n_inters, steps-1, dtype=jnp.float64)
 
 solver = dfx.Kvaerno5()
 stepsc = dfx.PIDController(rtol=1e-10, atol=1e-12, pcoeff=0.4, icoeff=0.3)
@@ -131,14 +132,27 @@ saveat = dfx.SaveAt(t1=True, ts=timesteps)
 
 # Calculate lyapunov spectrum
 now = time()
-traject, cums, times = flow_spectrum(flow=jitted_canon, solver=solver, z0=jnp.zeros((canon_chain.state_size,)), params=pars, save_at=timesteps,
+traject, cums, times = flow_spectrum(flow=lambda t, x, pars=None: canon_chain(x=x, t=t, p=pars), solver=solver, z0=jnp.zeros((canon_chain.state_size,), dtype=jnp.float64), params=pars, save_at=timesteps,
                                 t1=Tot_T, qr_every=steps, n_intervals=n_inters, stepsize=stepsc, burn_in=burns)
 later = time()
 
+# What do we expect?
+# We have 2 chains of coupled oscillators, driven.
+# 2 collective null-modes, one complex conjugate of the other -> 2 lyap_exp ~ 0
+# 1 "time" null mode -> total 3 ~ 0 lyap exp
+# full dampening -> modes with lyap_exp < 0
+
+# TODO: couple the trajectory back with the state order of the system
+# To distinguish variables between themselves
 print(f"Elapsed time: {later - now:.6f}")
 # Plot of the trajectory
 first = traject.transpose()
 plt.plot(first[0], first[1])
+plt.show()
+
+for i in range(1, len(canon_chain.state_vars) - 1, 2):
+    plt.plot(first[i], first[i+1])
+
 plt.show()
 
 plt.plot(cums)
